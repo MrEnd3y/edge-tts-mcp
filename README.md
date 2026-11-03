@@ -211,6 +211,10 @@ across chunks. One save call produces one MP3; no manual FFmpeg concatenation
 is needed. Longer text may exceed 45 seconds: raise both tool and MCP-client
 deadlines or submit smaller jobs. The 100,000-character limit is a bound, not
 a guarantee that a request will finish within the maximum 300 seconds.
+One validated 5,640-character fast-rate sample took roughly three minutes to
+generate; do not treat this as a bulk audiobook service. Background jobs,
+progress polling, resumable segments and chapter assembly are future work,
+not features of this release. See [the roadmap](docs/ROADMAP.md).
 
 Success includes `success: true`, `audio_path` (and the equivalent `path`),
 `size` in bytes, `duration_seconds`, `format`, `mime_type`, and applied voice/
@@ -276,6 +280,8 @@ subtitle serialization, and a real MCP stdio handshake/tool call. This
 does not alone prove online synthesis works.
 
 Live tests are opt-in and send fixed public sample phrases to Microsoft:
+the long-text test can take up to 300 seconds. Use `-k 'not long_text'` for
+only the six short online checks.
 
 ```sh
 # POSIX

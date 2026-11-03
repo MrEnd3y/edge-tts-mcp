@@ -3,7 +3,7 @@
 ## Version 0.2.0
 
 On Windows, the offline suite passes on both Python 3.12.4 and 3.14.8:
-**57 passed, 7 opt-in live tests skipped** per interpreter. This includes
+**59 passed, 7 opt-in live tests skipped** per interpreter. This includes
 requested-only sidecars, structured MCP content, profiles/defaults, Unicode
 chunking, SRT/VTT serialization, invalid/missing timing metadata, disabled
 features, cancellation and rollback after a sidecar write/publication failure.
@@ -13,12 +13,21 @@ Ruff lint/format checks pass. Wheel/sdist build successfully, do not include
 `uvx --python 3.12 --from . edge-voice-mcp --version` returns `0.2.0`;
 the 3.14 uvx CLI help lists the new voice and sidecar options.
 
-Online checks: 6 passed per interpreter (the baseline speech/voice checks plus
-SRT/MP3 and VTT/OGG with real WordBoundary events). The >5000-character long-text
-test at normal rate exceeded its 180-second deadline on both interpreters and
-returned a safe timeout failure, not a partial successful result. A repeat with
-explicit rate `+100%` and timeout 300 seconds is pending. This is not a claim
-that all 100000-character jobs can finish within the maximum deadline.
+Online checks: **7 passed per interpreter**, run as six short tests plus one
+long-text test. These cover the baseline speech/voice checks, SRT/MP3 and VTT/OGG
+with real WordBoundary events, and long-text timing offsets across library chunks.
+
+The 5640-character long-text test at normal rate initially exceeded its
+180-second deadline on both interpreters and returned a safe timeout failure,
+not a partial successful result. A repeat with explicit rate `+100%` and timeout
+300 seconds **passed on both** (about 188 s on 3.12 and 212 s on 3.14).
+The 3.12 output contained one 226.752-second MP3 (1360512 bytes), SRT and 840
+word events; the last word ended at 226321 ms. These are measurements from this
+test, not a throughput guarantee or a recommendation to silently accelerate speech.
+
+Maximum-length 100000-character requests were not tested. They may exceed the
+maximum deadline; book-length workloads need a separate background job/resume
+design rather than an indefinitely open MCP call. See the roadmap's future section.
 
 ## Version 0.1.0 (earlier baseline)
 
@@ -48,6 +57,8 @@ Other completed checks:
 - `ruff check .` and `ruff format --check .`.
 - `uv build`: wheel and source distribution built successfully.
 - `uvx --python 3.12 --from . edge-voice-mcp --version`: `0.1.0`.
+
+## Integration limits (both versions)
 
 Not verified here: Linux execution (CI workflow supplied but not run on GitHub),
 real Hermes integration, Telegram delivery, GitHub installation, or PyPI name
