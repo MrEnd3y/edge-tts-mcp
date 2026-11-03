@@ -6,10 +6,14 @@ import asyncio
 import json
 import os
 import subprocess
+import uuid
+from pathlib import Path
 
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from edge_voice_mcp.audio import validate_audio
 
 pytestmark = [
     pytest.mark.docker,
@@ -72,3 +76,53 @@ async def test_container_stdio_protocol() -> None:
                 assert capabilities.structuredContent["ffmpeg_available"] is True
                 rejected = await session.call_tool("tts", {"text": " "})
                 assert rejected.structuredContent["error_code"] == "invalid_input"
+
+
+def test_named_volume_persists_private_output() -> None:
+    volume = f"edge-voice-test-{uuid.uuid4().hex}"
+    args = ["docker", "run", "--rm", *HARDENING, "--mount",
+            f"type=volume,source={volume},target=/data/output", "--entrypoint", "python", IMAGE]
+    try:
+        script = "from pathlib import Path; p=Path('/data/output/check.txt'); p.write_text('test'); p.chmod(0o600)"
+        subprocess.run([*args, "-c", script], check=True, capture_output=True, text=True, timeout=30)
+        script = "import json,os,stat; from pathlib import Path; p=Path('/data/output/check.txt'); print(json.dumps({'content':p.read_text(),'mode':stat.S_IMODE(p.stat().st_mode),'uid':os.getuid()}))"
+        result = subprocess.run([*args, "-c", script], check=True, capture_output=True, text=True, timeout=30)
+        data = json.loads(result.stdout)
+        assert data["content"] == "test" and data["mode"] == 0o600 and data["uid"] != 0
+    finally:
+        # Only the uniquely named volume created by this test is removed.
+        subprocess.run(["docker", "volume", "rm", volume], capture_output=True, timeout=30, check=False)
+
+
+@pytest.mark.live
+@pytest.mark.skipif(os.environ.get("EDGE_TTS_LIVE_TESTS") != "1", reason="Network tests disabled")
+@pytest.mark.parametrize("audio_format,subtitles", [("mp3", "srt"), ("ogg", "vtt")])
+async def test_container_live_speech_and_sidecars(tmp_path: Path, audio_format: str, subtitles: str) -> None:
+    parameters = StdioServerParameters(command="docker", args=[
+        "run", "--rm", "--init", "-i", *HARDENING, "--mount",
+        f"type=bind,source={tmp_path},target=/data/output", IMAGE,
+    ])
+    async with asyncio.timeout(90):
+        async with stdio_client(parameters) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                response = await session.call_tool("tts", {
+                    "text": "Привет! Проверяем синтез речи внутри контейнера.",
+                    "voice": "ru-RU-SvetlanaNeural", "audio_format": audio_format,
+                    "subtitles": subtitles, "word_timings": True, "timeout": 60,
+                })
+                result = response.structuredContent
+                assert not response.isError and result["success"], result
+                assert not result.get("warnings"), result
+    # Explicit host/container mapping is part of this test, not an automatic
+    # translation promised by the MCP server to arbitrary clients.
+    audio = tmp_path / Path(result["audio_path"]).name
+    subtitle = tmp_path / Path(result["subtitle_path"]).name
+    timing = tmp_path / Path(result["word_timings_path"]).name
+    size, duration = validate_audio(audio, audio_format)
+    assert size == result["size"] and duration > 0
+    assert "-->" in subtitle.read_text(encoding="utf-8")
+    assert subtitle.read_text(encoding="utf-8").startswith("WEBVTT") == (subtitles == "vtt")
+    words = json.loads(timing.read_text(encoding="utf-8"))
+    assert len(words) >= 5 and words[-1]["end_ms"] <= duration * 1000 + 500
+    assert len(list(tmp_path.iterdir())) == 3
