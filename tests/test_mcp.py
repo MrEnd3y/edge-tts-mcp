@@ -47,10 +47,12 @@ async def test_voice_listing_error_sanitized(
     assert "private details" not in str(exc.value)
 
 
-async def test_stdio_protocol(tmp_path: Path) -> None:
+@pytest.mark.parametrize("disabled", [False, True])
+async def test_stdio_protocol(tmp_path: Path, disabled: bool) -> None:
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "edge_voice_mcp", "--output-dir", str(tmp_path)],
+        args=["-m", "edge_voice_mcp", "--output-dir", str(tmp_path)]
+        + (["--disable-sidecars", "--voice", "en-US-AriaNeural"] if disabled else []),
     )
     async with asyncio.timeout(20):
         async with stdio_client(parameters) as (read, write):
@@ -65,6 +67,11 @@ async def test_stdio_protocol(tmp_path: Path) -> None:
                 assert result.structuredContent["error_code"] == "invalid_input"
                 capabilities = await session.call_tool("get_capabilities", {})
                 assert capabilities.structuredContent["default_artifacts"] == ["audio"]
+                if disabled:
+                    assert capabilities.structuredContent["subtitles"] == []
+                    assert capabilities.structuredContent["defaults"]["voice"] == "en-US-AriaNeural"
+                    rejected = await session.call_tool("tts", {"text": "hi", "subtitles": "srt"})
+                    assert rejected.structuredContent["error_code"] == "feature_disabled"
                 assert schema["properties"]["subtitles"]["default"] == "none"
                 assert schema["properties"]["word_timings"]["default"] is False
                 result = await session.call_tool("tts", {"text": "hi", "timeout": 0})

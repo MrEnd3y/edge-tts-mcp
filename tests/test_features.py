@@ -238,6 +238,25 @@ async def test_malformed_metadata_does_not_fabricate_timings(
     assert "subtitle_path" not in result and "word_timings_path" not in result
 
 
+async def test_timings_beyond_audio_are_not_published(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, mp3_bytes: bytes
+) -> None:
+    async def save(self: object, filename: str, metadata_filename: str) -> None:
+        Path(filename).write_bytes(mp3_bytes)
+        event = {
+            "type": "WordBoundary",
+            "text": "hi",
+            "offset": 60_000_000_000,
+            "duration": 1_000_000,
+        }
+        Path(metadata_filename).write_text(json.dumps(event), encoding="utf-8")
+
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    result = await synthesize(settings, "hi", subtitles="srt", word_timings=True)
+    assert result["success"] and result["warnings"][0]["code"] == "timing_metadata_unavailable"
+    assert "subtitle_path" not in result and "word_timings_path" not in result
+
+
 @pytest.mark.parametrize("options", [{"subtitles": "ass"}, {"profile": "unknown"}])
 async def test_unknown_optional_arguments(settings: Settings, options: dict) -> None:
     result = await synthesize(settings, "hi", **options)

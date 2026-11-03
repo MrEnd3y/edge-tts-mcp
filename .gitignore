@@ -11,3 +11,9 @@ output/
 .env
 .env.*
 *.env
+*.mp3
+*.ogg
+*.srt
+*.vtt
+*.words.json
+.edge-tts-*/

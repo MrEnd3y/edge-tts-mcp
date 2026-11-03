@@ -133,6 +133,10 @@ async def synthesize(
             if needs_metadata:
                 try:
                     words = read_words(metadata_path)
+                    # Allow small codec/header rounding differences, not cues
+                    # far beyond the generated recording.
+                    if words[-1].end_ms > duration * 1000 + 500:
+                        raise TimingError("Word events exceed audio duration")
                 except TimingError:
                     result["warnings"] = [
                         {
