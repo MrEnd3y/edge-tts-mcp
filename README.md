@@ -20,6 +20,7 @@ name, not a claim that the PyPI/GitHub name is available.
 - Text up to 100,000 characters using edge-tts' internal chunking and continuous offsets.
 - Optional SRT/WebVTT captions and JSON word timings from Microsoft WordBoundary events.
 - **Audio only by default**: no caption/timing files unless explicitly requested.
+- Optional non-root Docker/Compose deployment with FFmpeg included; no HTTP port.
 
 Runtime pins: **edge-tts 7.3.1**, **MCP SDK 1.30.0**, **Mutagen 1.47.0**.
 MCP SDK 2.x is intentionally excluded. Python >=3.12; CI targets 3.12/3.14
@@ -70,6 +71,22 @@ Point the MCP client directly at that environment's Python with
 No environment activation is required. Install dependencies ahead of time for
 deployment; do not run pip on each MCP invocation.
 
+### Docker / Compose
+
+An optional multi-stage image includes Python and FFmpeg and runs as an ordinary
+user. You do not need Python or uv installed on the host to use this option.
+
+```sh
+docker build --tag edge-voice-mcp:local .
+docker run --rm edge-voice-mcp:local --version
+```
+
+For actual MCP connections use `docker run -i` **without `-t`**. This is stdio,
+not a web server; there is no port to publish. Mount persistent output, and for
+host-based Hermes use the same absolute output path and matching UID/GID inside
+and outside the container. Otherwise returned container paths may not be readable
+by Hermes. See [Docker/Compose instructions](docs/DOCKER.md) for complete examples.
+
 ### pipx
 
 With pipx installed and a suitable Python available:
@@ -83,6 +100,10 @@ The package is not published to PyPI yet: install from the checkout or your
 eventual Git URL, not an unrelated package with a similar name. The checked-in
 `uv.lock` is used by uv project commands; pip/pipx/uvx do not automatically
 apply that lockfile. Pin package versions/commits for repeatable deployment.
+For a fully pinned runtime installation without uv, install the hash-verified
+`requirements-runtime.txt` first (`python -m pip install --require-hashes -r
+requirements-runtime.txt`), then install the local project with
+`python -m pip install --no-deps .`. CI checks that the snapshot matches `uv.lock`.
 
 ## MCP configuration
 
@@ -133,7 +154,7 @@ Allow a client timeout longer than the tool deadline (e.g. 60 s for the default
 ### `get_capabilities()`
 
 Read local formats, FFmpeg executable availability, limits, configured defaults,
-profiles and whether subtitle/timing files are allowed. Makes no network request.
+profiles, concurrency limit and whether subtitle/timing files are allowed. Makes no network request.
 FFmpeg executable presence does not guarantee libopus support. It also does not
 prove the Microsoft service is currently reachable.
 
@@ -173,6 +194,9 @@ Profiles select rate/volume/pitch presets, not emotions. Configured settings are
 used for `default`; `narration` uses rate `-10%`, `notification` `+15%`, and `slow`
 `-25%`, with neutral volume/pitch. Explicit call parameters override any profile.
 Voice is never silently changed by a profile.
+MCP calls are limited to two active synthesis jobs per server by default.
+Queue wait counts toward the same deadline; there are no persistent/background
+jobs. `get_capabilities` reports the configured limit.
 
 Russian MP3:
 
@@ -239,15 +263,24 @@ or integration; actual Hermes/Telegram delivery must be tested separately.
 | `EDGE_TTS_VOLUME` | `+0%` |
 | `EDGE_TTS_PITCH` | `+0Hz` |
 | `EDGE_TTS_ALLOW_SIDECARS` | `1`; `0`, `false`, `no`, `off` reject subtitle/timing requests |
+| `EDGE_TTS_MAX_CONCURRENT` / `--max-concurrent` | `2`; integer 1–16, per MCP server instance |
 
 `--disable-sidecars` also rejects subtitle/timing requests regardless of model
 choices. Requests without those options still work. No dotenv file is loaded.
+Boolean settings accept `1/0`, `true/false`, `yes/no`, and `on/off`; unrecognised
+values are configuration errors, never a silent opt-in. Invalid default speech
+parameters fail at startup. CLI overrides are applied before configuration validation.
 
 CLI options override environment settings. The output directory must be
 writable by the MCP account. Successful files remain until **you** delete them;
 monitor storage and set your own retention policy. Partial files are removed on
 ordinary errors/cancellation; an OS crash or forced process kill can leave staging
 directories. Cleanup failures are logged without speech text or service details.
+New POSIX output directories use `0700`, final audio/sidecar files use `0600`;
+existing directory permissions are not changed. Windows uses inherited ACLs.
+FFmpeg cleanup has its own bounded wait of up to 5 additional seconds, so leave
+client shutdown/deadline headroom. This is for trusted local clients, not a public
+multi-user service. See [SECURITY.md](SECURITY.md).
 
 Speech text is sent to Microsoft's external online service through `edge-tts`.
 Do not submit confidential text without appropriate permission. This is not an
@@ -263,7 +296,11 @@ uv sync --locked
 uv run --locked pytest -q
 uv run --locked ruff check .
 uv run --locked ruff format --check .
+uv run --locked mypy
+uv run --locked bandit -q -r src
+uv run --locked pytest -q --cov=edge_voice_mcp
 uv build
+uv run --locked twine check --strict dist/*
 ```
 
 Run the complete offline suite independently on each interpreter:
@@ -278,6 +315,10 @@ tone, async save mocks, invalid inputs, timeout/cancellation cleanup, unique
 parallel outputs, sidecar rollback, disabled/missing metadata, safe errors,
 subtitle serialization, and a real MCP stdio handshake/tool call. This
 does not alone prove online synthesis works.
+Branch coverage is collected with a 90% minimum in CI. Static typing ignores
+missing third-party stubs; it is not a strict proof of all runtime behaviour.
+Docker tests are separately opt-in and require a running Linux engine plus a
+locally built image; see [the container test commands](docs/DOCKER.md).
 
 Live tests are opt-in and send fixed public sample phrases to Microsoft:
 the long-text test can take up to 300 seconds. Use `-k 'not long_text'` for
@@ -304,6 +345,8 @@ its interface and failure modes; its source is not included. The old
 See [the review](docs/UPSTREAM_REVIEW.md).
 Other existing implementations are compared in
 [the alternatives review](docs/ALTERNATIVES_REVIEW.md).
+See the [pre-publication review and release checklist](docs/PUBLICATION_REVIEW.md)
+and [changelog](CHANGELOG.md) before publishing. No upload/publish workflow is enabled.
 
 Project code: [MIT](LICENSE). Dependencies retain their own licenses:
 [`edge-tts`](https://github.com/rany2/edge-tts),

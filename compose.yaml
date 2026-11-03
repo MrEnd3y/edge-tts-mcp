@@ -1,0 +1,22 @@
+services:
+  edge-voice-mcp:
+    image: edge-voice-mcp:local
+    build:
+      context: .
+    stdin_open: true
+    tty: false
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      EDGE_TTS_OUTPUT_DIR: /data/output
+    volumes:
+      - speech-output:/data/output
+
+volumes:
+  speech-output:

@@ -1,5 +1,33 @@
 # Local validation
 
+## Version 0.2.1 (pre-publication review)
+
+On Windows, the reviewed code passes **85 offline tests** per interpreter,
+with 7 live and 2 Docker tests skipped in the default run. Branch coverage is
+about **95%** on Python 3.12.4 and 3.14.8; the CI minimum is 90%.
+
+All **7 opt-in Microsoft tests were rerun and passed on both interpreters**,
+including real SRT/VTT, OGG/Opus, word events and the >5000-character request.
+These timings varied substantially from earlier runs; no throughput SLA follows.
+
+Other checks:
+
+- Ruff lint/format and mypy pass; Bandit reports no findings in owned source.
+- `pip-audit` reports no known advisories in the pinned runtime export. OS,
+  interpreter, FFmpeg and unknown vulnerabilities are outside that result.
+- Wheel and sdist build; installation/CLI smoke checks succeed from the wheel
+  on Python 3.12 and from sdist on 3.14 (`0.2.1`).
+- Strict metadata validation initially failed with Twine 6.2 / metadata 2.5;
+  after updating to Twine 7, both wheel and sdist pass `twine check --strict`.
+- Docker now uses only pip/wheels. Its runtime-only dependency snapshot is
+  pinned and hashed; a test checks its shape and CI checks export consistency.
+- Docker Compose configuration validates without needing the engine. **The
+  Docker image has not been built/run locally** because the Linux engine is
+  not running. Two offline container tests and a CI image job are prepared.
+
+The five reproduced pre-review defects, hardening changes and remaining release
+decisions are detailed in [PUBLICATION_REVIEW.md](PUBLICATION_REVIEW.md).
+
 ## Version 0.2.0
 
 On Windows, the offline suite passes on both Python 3.12.4 and 3.14.8:
