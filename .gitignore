@@ -17,3 +17,8 @@ output/
 *.vtt
 *.words.json
 .edge-tts-*/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/

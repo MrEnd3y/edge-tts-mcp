@@ -37,9 +37,42 @@ class Settings:
     pitch: str = "+0Hz"
     allow_sidecars: bool = True
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.output_dir, Path):
+            raise ValueError("output_dir must be a pathlib.Path")
+        if not isinstance(self.ffmpeg, str) or not self.ffmpeg.strip():
+            raise ValueError("FFmpeg executable must not be empty")
+        if not isinstance(self.voice, str) or not self.voice.strip():
+            raise ValueError("Default voice must not be empty")
+        if type(self.allow_sidecars) is not bool:
+            raise ValueError("allow_sidecars must be boolean")
+        try:
+            # Constructor validation only: no connection or synthesis is started.
+            edge_tts.Communicate(
+                "Configuration check",
+                self.voice.strip(),
+                rate=self.rate,
+                volume=self.volume,
+                pitch=self.pitch,
+            )
+        except (TypeError, ValueError):
+            raise ValueError("Invalid default voice, rate, volume, or pitch") from None
+
 
 def failure(code: str, message: str) -> dict:
     return {"success": False, "error_code": code, "error": message}
+
+
+def _check_deadline(deadline: float) -> None:
+    if asyncio.get_running_loop().time() >= deadline:
+        raise TimeoutError
+
+
+async def _checkpoint(deadline: float) -> None:
+    # asyncio timeouts/cancellation are delivered at suspension points. Save
+    # mocks (and the final synchronous write in the SDK) need not suspend.
+    await asyncio.sleep(0)
+    _check_deadline(deadline)
 
 
 async def synthesize(
@@ -82,19 +115,23 @@ async def synthesize(
     work: tempfile.TemporaryDirectory | None = None
     published: list[Path] = []
     completed = False
+    deadline = asyncio.get_running_loop().time() + timeout
     try:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout_at(deadline):
             # Validate options before creating files or contacting the service.
-            communicate = edge_tts.Communicate(
-                text,
-                voice.strip(),
-                rate=rate,
-                volume=volume,
-                pitch=pitch,
-                boundary="WordBoundary" if needs_metadata else "SentenceBoundary",
-                connect_timeout=10,
-                receive_timeout=30,
-            )
+            try:
+                communicate = edge_tts.Communicate(
+                    text,
+                    voice.strip(),
+                    rate=rate,
+                    volume=volume,
+                    pitch=pitch,
+                    boundary="WordBoundary" if needs_metadata else "SentenceBoundary",
+                    connect_timeout=10,
+                    receive_timeout=30,
+                )
+            except (ValueError, TypeError):
+                return failure("invalid_input", "Invalid voice, rate, volume, or pitch parameter")
             ffmpeg = find_ffmpeg(settings.ffmpeg) if audio_format == "ogg" else None
             directory = settings.output_dir.expanduser().resolve()
             directory.mkdir(parents=True, exist_ok=True)
@@ -106,6 +143,7 @@ async def synthesize(
                 await communicate.save(str(mp3_path), str(metadata_path))
             else:
                 await communicate.save(str(mp3_path))
+            await _checkpoint(deadline)
             size, duration = validate_audio(mp3_path, "mp3")
             result_path = mp3_path
             if ffmpeg is not None:
@@ -164,26 +202,30 @@ async def synthesize(
                         outputs.append((source, target))
                         result["subtitle_path"] = str(target)
                         result["subtitle_format"] = subtitles
+            await _checkpoint(deadline)
             # No awaits during publication. Roll back published files on failure.
             for source, target in outputs:
+                _check_deadline(deadline)
                 source.replace(target)
                 published.append(target)
+            _check_deadline(deadline)
             completed = True
             return result
     except TimeoutError:
-        return failure("timeout", f"Synthesis/conversion timed out after {timeout:g} seconds")
+        return failure(
+            "timeout", f"Synthesis/conversion timed out (overall budget: {timeout:g} seconds)"
+        )
     except edge_tts.exceptions.NoAudioReceived:
         return failure("no_audio", "Microsoft returned no audio; check the voice or retry later")
-    except (ValueError, TypeError):
-        return failure("invalid_input", "Invalid voice, rate, volume, or pitch parameter")
     except AudioError as exc:
         return failure("audio_error", str(exc))
     except OSError:
         return failure(
             "io_error", "Cannot read/write audio or launch FFmpeg; check paths and permissions"
         )
-    except Exception:
+    except Exception as exc:
         # Service exceptions may include URLs/headers. Never echo their values.
+        logger.warning("Unexpected speech operation failure (%s)", type(exc).__name__)
         return failure(
             "service_error", "Microsoft speech service request failed; check network access"
         )

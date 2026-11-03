@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import shutil
 from pathlib import Path
@@ -10,6 +11,9 @@ from pathlib import Path
 import anyio
 from mutagen.mp3 import MP3
 from mutagen.oggopus import OggOpus
+
+logger = logging.getLogger(__name__)
+PROCESS_CLEANUP_TIMEOUT = 5
 
 
 class AudioError(Exception):
@@ -23,7 +27,10 @@ def validate_audio(path: Path, audio_format: str) -> tuple[int, float]:
         if size == 0:
             raise ValueError("empty")
         audio = MP3(path) if audio_format == "mp3" else OggOpus(path)
-        duration = float(audio.info.length)
+        info = audio.info
+        if info is None:
+            raise ValueError("missing audio info")
+        duration = float(info.length)
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError("invalid duration")
     except Exception as exc:
@@ -37,6 +44,31 @@ def find_ffmpeg(executable: str) -> str:
     if resolved is None:
         raise AudioError("OGG/Opus requires FFmpeg with libopus; set EDGE_TTS_FFMPEG")
     return resolved
+
+
+async def _stop_encoder(process: asyncio.subprocess.Process) -> None:
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+    interrupted = False
+    # AnyIO protects against level-triggered cancel scopes; asyncio.shield
+    # protects the reaper task against repeated direct Task.cancel() calls.
+    with anyio.CancelScope(shield=True):
+        waiter = asyncio.create_task(asyncio.wait_for(process.wait(), PROCESS_CLEANUP_TIMEOUT))
+        while not waiter.done():
+            try:
+                await asyncio.shield(waiter)
+            except asyncio.CancelledError:
+                interrupted = True
+            except (TimeoutError, OSError):
+                break
+        try:
+            waiter.result()
+        except (TimeoutError, OSError):
+            logger.warning("FFmpeg cleanup did not complete within its bounded wait")
+    if interrupted:
+        raise asyncio.CancelledError
 
 
 async def convert_to_opus(ffmpeg: str, source: Path, destination: Path) -> None:
@@ -76,13 +108,6 @@ async def convert_to_opus(ffmpeg: str, source: Path, destination: Path) -> None:
         await process.wait()
     finally:
         if process.returncode is None:
-            try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-            # Shield reaping from MCP's cancellation scope, not just asyncio's
-            # single task cancellation. Do not leave an encoder running.
-            with anyio.CancelScope(shield=True):
-                await process.wait()
+            await _stop_encoder(process)
     if process.returncode != 0:
         raise AudioError("FFmpeg conversion failed; check that FFmpeg supports libopus")

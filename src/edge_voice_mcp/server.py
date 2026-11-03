@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 
 import edge_tts
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from . import __version__
@@ -20,17 +21,68 @@ from .timings import SubtitleFormat
 DEFAULT_OUTPUT_DIR = Path.home() / ".edge-voice-mcp" / "output"
 
 
-def settings_from_environment() -> Settings:
+def _filter_voices(
+    voices: object, locale: str, gender: str, query: str, offset: int, limit: int | None
+) -> list[dict[str, Any]]:
+    if not isinstance(voices, list):
+        raise ValueError("Invalid voice catalog")
+    matches: list[dict[str, Any]] = []
+    prefix, search = locale.strip().casefold(), query.strip().casefold()
+    for raw in voices:
+        if not isinstance(raw, dict) or any(
+            not isinstance(raw.get(key), str) or not raw[key]
+            for key in ("ShortName", "Gender", "Locale")
+        ):
+            raise ValueError("Invalid voice entry")
+        if not raw["Locale"].casefold().startswith(prefix) or (gender and raw["Gender"] != gender):
+            continue
+        item: dict[str, Any] = {key: raw[key] for key in ("ShortName", "Gender", "Locale")}
+        for key in ("FriendlyName", "Name"):
+            if isinstance(raw.get(key), str):
+                item[key] = raw[key]
+        tags = raw.get("VoiceTag")
+        if isinstance(tags, dict):
+            item["VoiceTag"] = {
+                key: values
+                for key, values in tags.items()
+                if isinstance(key, str)
+                and isinstance(values, list)
+                and all(isinstance(value, str) for value in values)
+            }
+        values = [value for value in item.values() if isinstance(value, str)]
+        for tag_values in item.get("VoiceTag", {}).values():
+            values.extend(tag_values)
+        if not search or search in " ".join(values).casefold():
+            matches.append(item)
+    return matches[offset : None if limit is None else offset + limit]
+
+
+def settings_from_environment(
+    *,
+    output_dir: Path | None = None,
+    ffmpeg: str | None = None,
+    voice: str | None = None,
+    disable_sidecars: bool = False,
+) -> Settings:
     """Read only documented, nonsecret settings. Never load a dotenv file."""
+    flag = (
+        "0" if disable_sidecars else os.environ.get("EDGE_TTS_ALLOW_SIDECARS", "1").strip().lower()
+    )
+    if flag not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
+        raise ValueError("EDGE_TTS_ALLOW_SIDECARS must be 1/0, true/false, yes/no, or on/off")
+    if output_dir is None:
+        path = os.environ.get("EDGE_TTS_OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR))
+        if not path.strip():
+            raise ValueError("EDGE_TTS_OUTPUT_DIR must not be empty")
+        output_dir = Path(path)
     return Settings(
-        output_dir=Path(os.environ.get("EDGE_TTS_OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR))),
-        ffmpeg=os.environ.get("EDGE_TTS_FFMPEG", "ffmpeg"),
-        voice=os.environ.get("EDGE_TTS_VOICE", "ru-RU-SvetlanaNeural"),
+        output_dir=output_dir,
+        ffmpeg=os.environ.get("EDGE_TTS_FFMPEG", "ffmpeg") if ffmpeg is None else ffmpeg,
+        voice=os.environ.get("EDGE_TTS_VOICE", "ru-RU-SvetlanaNeural") if voice is None else voice,
         rate=os.environ.get("EDGE_TTS_RATE", "+0%"),
         volume=os.environ.get("EDGE_TTS_VOLUME", "+0%"),
         pitch=os.environ.get("EDGE_TTS_PITCH", "+0Hz"),
-        allow_sidecars=os.environ.get("EDGE_TTS_ALLOW_SIDECARS", "1").strip().lower()
-        not in ("0", "false", "no", "off"),
+        allow_sidecars=flag in ("1", "true", "yes", "on"),
     )
 
 
@@ -49,7 +101,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         ),
     )
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
     async def get_capabilities() -> dict[str, Any]:
         """Read local speech formats, optional artifacts, profiles and defaults; no network request.
 
@@ -79,7 +131,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             "delivery": "local_paths_only",
         }
 
-    @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": True})
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True))
     async def list_voice(
         locale: str = "",
         gender: Literal["", "Female", "Male"] = "",
@@ -96,35 +148,16 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         try:
             async with asyncio.timeout(30):
                 voices = await edge_tts.list_voices()
+            return _filter_voices(voices, locale, gender, query, offset, limit)
         except TimeoutError:
             raise ValueError("Voice listing timed out after 30 seconds") from None
         except Exception:
             raise ValueError("Cannot retrieve Microsoft voices; check network access") from None
-        prefix = locale.strip().casefold()
-        matches = []
-        search = query.strip().casefold()
-        for voice in voices:
-            if not voice["Locale"].casefold().startswith(prefix) or (
-                gender and voice["Gender"] != gender
-            ):
-                continue
-            item = {
-                key: voice[key]
-                for key in ("ShortName", "Gender", "Locale", "FriendlyName", "Name", "VoiceTag")
-                if key in voice
-            }
-            if search and search not in str(item).casefold():
-                continue
-            matches.append(item)
-        return matches[offset : None if limit is None else offset + limit]
 
     @mcp.tool(
-        annotations={
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": True,
-        }
+        annotations=ToolAnnotations(
+            readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True
+        )
     )
     async def tts(
         text: Annotated[str, Field(min_length=1, max_length=MAX_TEXT_LENGTH)],
@@ -178,16 +211,15 @@ def main() -> None:
         "--disable-sidecars", action="store_true", help="Reject subtitle/timing requests"
     )
     args = parser.parse_args()
-    defaults = settings_from_environment()
-    settings = Settings(
-        output_dir=args.output_dir or defaults.output_dir,
-        ffmpeg=args.ffmpeg or defaults.ffmpeg,
-        voice=args.voice or defaults.voice,
-        rate=defaults.rate,
-        volume=defaults.volume,
-        pitch=defaults.pitch,
-        allow_sidecars=defaults.allow_sidecars and not args.disable_sidecars,
-    )
+    try:
+        settings = settings_from_environment(
+            output_dir=args.output_dir,
+            ffmpeg=args.ffmpeg,
+            voice=args.voice,
+            disable_sidecars=args.disable_sidecars,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     create_server(settings).run(transport="stdio")
 
 
