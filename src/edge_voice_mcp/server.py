@@ -63,6 +63,7 @@ def settings_from_environment(
     ffmpeg: str | None = None,
     voice: str | None = None,
     disable_sidecars: bool = False,
+    max_concurrent: int | None = None,
 ) -> Settings:
     """Read only documented, nonsecret settings. Never load a dotenv file."""
     flag = (
@@ -75,6 +76,13 @@ def settings_from_environment(
         if not path.strip():
             raise ValueError("EDGE_TTS_OUTPUT_DIR must not be empty")
         output_dir = Path(path)
+    if max_concurrent is None:
+        try:
+            max_concurrent = int(os.environ.get("EDGE_TTS_MAX_CONCURRENT", "2"))
+        except ValueError:
+            raise ValueError(
+                "EDGE_TTS_MAX_CONCURRENT must be an integer between 1 and 16"
+            ) from None
     return Settings(
         output_dir=output_dir,
         ffmpeg=os.environ.get("EDGE_TTS_FFMPEG", "ffmpeg") if ffmpeg is None else ffmpeg,
@@ -83,12 +91,14 @@ def settings_from_environment(
         volume=os.environ.get("EDGE_TTS_VOLUME", "+0%"),
         pitch=os.environ.get("EDGE_TTS_PITCH", "+0Hz"),
         allow_sidecars=flag in ("1", "true", "yes", "on"),
+        max_concurrent=max_concurrent,
     )
 
 
 def create_server(settings: Settings | None = None) -> FastMCP:
     """Create an isolated server; configuration never changes Hermes settings."""
     settings = settings or settings_from_environment()
+    semaphore = asyncio.Semaphore(settings.max_concurrent)
     mcp = FastMCP(
         "edge-voice-mcp",
         instructions=(
@@ -116,6 +126,8 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             "format_requirements": {"mp3": [], "ogg": ["ffmpeg", "libopus"]},
             "max_text_characters": MAX_TEXT_LENGTH,
             "timeout_seconds": {"default": 45, "maximum": 300},
+            "max_concurrent_synthesis": settings.max_concurrent,
+            "queue_wait_counts_toward_timeout": True,
             "long_text": "edge-tts internal UTF-8-safe chunking with continuous audio and offsets",
             "subtitles": ["srt", "vtt"] if settings.allow_sidecars else [],
             "word_timings": settings.allow_sidecars,
@@ -179,7 +191,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         highlighting/editing. Missing boundary events return audio with warnings,
         never estimated timings. Profiles are rate presets, not emotional styles.
         Explicit voice/rate/volume/pitch override configured defaults/presets.
-        Timeout covers synthesis, conversion and sidecars. Up to 100000 characters;
+        Timeout includes queue wait, synthesis, conversion and sidecars. Up to 100000 characters;
         for long jobs increase timeout and client's deadline or shorten text.
         Check success/warnings before using audio_path, subtitle_path or
         word_timings_path. Paths are local to the MCP host, not uploaded.
@@ -196,6 +208,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             subtitles,
             word_timings,
             profile,
+            semaphore=semaphore,
         )
 
     return mcp
@@ -208,6 +221,9 @@ def main() -> None:
     parser.add_argument("--ffmpeg", help="Override EDGE_TTS_FFMPEG executable path")
     parser.add_argument("--voice", help="Override EDGE_TTS_VOICE default voice")
     parser.add_argument(
+        "--max-concurrent", type=int, help="Concurrent synthesis limit (1–16); default 2"
+    )
+    parser.add_argument(
         "--disable-sidecars", action="store_true", help="Reject subtitle/timing requests"
     )
     args = parser.parse_args()
@@ -217,6 +233,7 @@ def main() -> None:
             ffmpeg=args.ffmpeg,
             voice=args.voice,
             disable_sidecars=args.disable_sidecars,
+            max_concurrent=args.max_concurrent,
         )
     except ValueError as exc:
         parser.error(str(exc))

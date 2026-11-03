@@ -7,6 +7,7 @@ import json
 import logging
 import tempfile
 import uuid
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -36,6 +37,7 @@ class Settings:
     volume: str = "+0%"
     pitch: str = "+0Hz"
     allow_sidecars: bool = True
+    max_concurrent: int = 2
 
     def __post_init__(self) -> None:
         if not isinstance(self.output_dir, Path):
@@ -46,6 +48,8 @@ class Settings:
             raise ValueError("Default voice must not be empty")
         if type(self.allow_sidecars) is not bool:
             raise ValueError("allow_sidecars must be boolean")
+        if type(self.max_concurrent) is not int or not 1 <= self.max_concurrent <= 16:
+            raise ValueError("max_concurrent must be an integer between 1 and 16")
         try:
             # Constructor validation only: no connection or synthesis is started.
             edge_tts.Communicate(
@@ -87,6 +91,8 @@ async def synthesize(
     subtitles: SubtitleFormat = "none",
     word_timings: bool = False,
     profile: SpeechProfile = "default",
+    *,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> dict:
     """Save, validate, optionally convert, and publish audio with requested sidecars."""
     if not text.strip() or len(text) > MAX_TEXT_LENGTH:
@@ -117,7 +123,7 @@ async def synthesize(
     completed = False
     deadline = asyncio.get_running_loop().time() + timeout
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(deadline), AsyncExitStack() as stack:
             # Validate options before creating files or contacting the service.
             try:
                 communicate = edge_tts.Communicate(
@@ -132,9 +138,11 @@ async def synthesize(
                 )
             except (ValueError, TypeError):
                 return failure("invalid_input", "Invalid voice, rate, volume, or pitch parameter")
+            if semaphore is not None:
+                await stack.enter_async_context(semaphore)
             ffmpeg = find_ffmpeg(settings.ffmpeg) if audio_format == "ogg" else None
             directory = settings.output_dir.expanduser().resolve()
-            directory.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             work = tempfile.TemporaryDirectory(prefix=".edge-tts-", dir=directory)
             mp3_path = Path(work.name) / "speech.mp3"
             metadata_path = Path(work.name) / "boundaries.jsonl"
@@ -206,6 +214,7 @@ async def synthesize(
             # No awaits during publication. Roll back published files on failure.
             for source, target in outputs:
                 _check_deadline(deadline)
+                source.chmod(0o600)
                 source.replace(target)
                 published.append(target)
             _check_deadline(deadline)

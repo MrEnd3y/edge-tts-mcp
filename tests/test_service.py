@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -34,6 +36,8 @@ async def test_valid_audio(
     assert path.suffix == f".{audio_format}"
     assert result["duration_seconds"] > 0
     assert result["size"] == path.stat().st_size
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     validate_audio(path, audio_format)
     assert list(settings.output_dir.iterdir()) == [path]
 

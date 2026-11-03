@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import time
 import sys
+import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
@@ -238,3 +239,57 @@ async def test_encoder_reaping_has_its_own_bounded_wait(
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 2)
     assert "bounded wait" in caplog.text
+
+
+async def test_server_limits_parallel_synthesis(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, mp3_bytes: bytes
+) -> None:
+    active = peak = 0
+
+    async def save(self: object, filename: str) -> None:
+        nonlocal active, peak
+        active += 1
+        peak = max(active, peak)
+        try:
+            await asyncio.sleep(0.02)
+            Path(filename).write_bytes(mp3_bytes)
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    instance = server.create_server(replace(settings, max_concurrent=1))
+    results = await asyncio.gather(
+        *(instance.call_tool("tts", {"text": "hello"}) for _ in range(3))
+    )
+    assert all(result[1]["success"] for result in results)
+    assert peak == 1
+
+
+async def test_waiting_for_slot_uses_the_same_deadline(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, mp3_bytes: bytes
+) -> None:
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def save(self: object, filename: str) -> None:
+        started.set()
+        await finish.wait()
+        Path(filename).write_bytes(mp3_bytes)
+
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    instance = server.create_server(replace(settings, max_concurrent=1))
+    first = asyncio.create_task(instance.call_tool("tts", {"text": "hello"}))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        _text, result = await instance.call_tool("tts", {"text": "queued", "timeout": 0.01})
+        assert result["error_code"] == "timeout"
+    finally:
+        finish.set()
+        await first
+    assert len(list(settings.output_dir.iterdir())) == 1
+
+
+@pytest.mark.parametrize("value", ["zero", "0", "17"])
+def test_invalid_concurrency_is_rejected(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("EDGE_TTS_MAX_CONCURRENT", value)
+    with pytest.raises(ValueError, match="integer between 1 and 16"):
+        server.settings_from_environment()
