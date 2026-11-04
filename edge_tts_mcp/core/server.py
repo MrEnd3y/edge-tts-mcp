@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
-from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import edge_tts
@@ -13,11 +11,19 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import __version__
-from .service import MAX_TEXT_LENGTH, PROFILES, AudioFormat, Settings, SpeechProfile, synthesize
+from .. import __version__
+from ..config import MAX_TIMEOUT_SECONDS, TECHNICAL_TEMPO_MAX, TECHNICAL_TEMPO_MIN, Settings
+from ..config import settings_from_environment as settings_from_environment
+from .service import (
+    DURATION_TOLERANCE_FRACTION,
+    DURATION_TOLERANCE_SECONDS,
+    MAX_TEXT_LENGTH,
+    PROFILES,
+    AudioFormat,
+    SpeechProfile,
+    synthesize,
+)
 from .timings import SubtitleFormat
-
-DEFAULT_OUTPUT_DIR = Path.home() / ".edge-tts-mcp" / "output"
 
 
 def _filter_voices(
@@ -56,47 +62,11 @@ def _filter_voices(
     return matches[offset : None if limit is None else offset + limit]
 
 
-def settings_from_environment(
-    *,
-    output_dir: Path | None = None,
-    ffmpeg: str | None = None,
-    voice: str | None = None,
-    disable_sidecars: bool = False,
-    max_concurrent: int | None = None,
-) -> Settings:
-    """Read only documented, nonsecret settings. Never load a dotenv file."""
-    flag = (
-        "0" if disable_sidecars else os.environ.get("EDGE_TTS_ALLOW_SIDECARS", "1").strip().lower()
-    )
-    if flag not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
-        raise ValueError("EDGE_TTS_ALLOW_SIDECARS must be 1/0, true/false, yes/no, or on/off")
-    if output_dir is None:
-        path = os.environ.get("EDGE_TTS_OUTPUT_DIR", str(DEFAULT_OUTPUT_DIR))
-        if not path.strip():
-            raise ValueError("EDGE_TTS_OUTPUT_DIR must not be empty")
-        output_dir = Path(path)
-    if max_concurrent is None:
-        try:
-            max_concurrent = int(os.environ.get("EDGE_TTS_MAX_CONCURRENT", "2"))
-        except ValueError:
-            raise ValueError(
-                "EDGE_TTS_MAX_CONCURRENT must be an integer between 1 and 16"
-            ) from None
-    return Settings(
-        output_dir=output_dir,
-        ffmpeg=os.environ.get("EDGE_TTS_FFMPEG", "ffmpeg") if ffmpeg is None else ffmpeg,
-        voice=os.environ.get("EDGE_TTS_VOICE", "ru-RU-SvetlanaNeural") if voice is None else voice,
-        rate=os.environ.get("EDGE_TTS_RATE", "+0%"),
-        volume=os.environ.get("EDGE_TTS_VOLUME", "+0%"),
-        pitch=os.environ.get("EDGE_TTS_PITCH", "+0Hz"),
-        allow_sidecars=flag in ("1", "true", "yes", "on"),
-        max_concurrent=max_concurrent,
-    )
-
-
 def create_server(settings: Settings | None = None) -> FastMCP:
     """Create an isolated stdio MCP server."""
     settings = settings or settings_from_environment()
+    # Capture non-optional, validated defaults for the generated tool schema.
+    request_defaults: Settings = settings
     semaphore = asyncio.Semaphore(settings.max_concurrent)
     mcp = FastMCP(
         "edge-tts-mcp",
@@ -122,9 +92,19 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             "server_version": __version__,
             "audio_formats": ["mp3", "ogg"],
             "ffmpeg_available": shutil.which(settings.ffmpeg) is not None,
+            "ffprobe_available": shutil.which(settings.ffprobe) is not None,
             "format_requirements": {"mp3": [], "ogg": ["ffmpeg", "libopus"]},
             "max_text_characters": MAX_TEXT_LENGTH,
-            "timeout_seconds": {"default": 45, "maximum": 300},
+            "timeout_seconds": {"default": settings.timeout, "maximum": MAX_TIMEOUT_SECONDS},
+            "max_audio_duration_seconds": settings.max_audio_duration_seconds,
+            "duration_fitting": {
+                "maximum_target_seconds": settings.max_audio_duration_seconds,
+                "tempo_range": [TECHNICAL_TEMPO_MIN, TECHNICAL_TEMPO_MAX],
+                "default_tempo_range": [settings.tempo_min, settings.tempo_max],
+                "tolerance_seconds": DURATION_TOLERANCE_SECONDS,
+                "tolerance_fraction": DURATION_TOLERANCE_FRACTION,
+                "requires": ["ffmpeg", "ffprobe"],
+            },
             "max_concurrent_synthesis": settings.max_concurrent,
             "queue_wait_counts_toward_timeout": True,
             "long_text": "edge-tts internal UTF-8-safe chunking with continuous audio and offsets",
@@ -137,6 +117,10 @@ def create_server(settings: Settings | None = None) -> FastMCP:
                 "rate": settings.rate,
                 "volume": settings.volume,
                 "pitch": settings.pitch,
+                "tempo_min": settings.tempo_min,
+                "tempo_max": settings.tempo_max,
+                "timeout": settings.timeout,
+                "max_audio_duration_seconds": settings.max_audio_duration_seconds,
             },
             "profiles": {"default": "Configured settings", **PROFILES},
             "delivery": "local_paths_only",
@@ -177,10 +161,27 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         volume: str | None = None,
         pitch: str | None = None,
         audio_format: AudioFormat = "mp3",
-        timeout: Annotated[float, Field(gt=0, le=300)] = 45,
+        timeout: Annotated[
+            float, Field(gt=0, le=MAX_TIMEOUT_SECONDS, allow_inf_nan=False, strict=True)
+        ] = request_defaults.timeout,
         subtitles: SubtitleFormat = "none",
         word_timings: bool = False,
         profile: SpeechProfile = "default",
+        target_duration_seconds: Annotated[
+            float | None,
+            Field(gt=0, allow_inf_nan=False, strict=True),
+        ] = None,
+        tempo_min: Annotated[
+            float,
+            Field(ge=TECHNICAL_TEMPO_MIN, le=TECHNICAL_TEMPO_MAX, allow_inf_nan=False, strict=True),
+        ] = request_defaults.tempo_min,
+        tempo_max: Annotated[
+            float,
+            Field(ge=TECHNICAL_TEMPO_MIN, le=TECHNICAL_TEMPO_MAX, allow_inf_nan=False, strict=True),
+        ] = request_defaults.tempo_max,
+        max_audio_duration_seconds: Annotated[
+            float, Field(gt=0, allow_inf_nan=False, strict=True)
+        ] = request_defaults.max_audio_duration_seconds,
     ) -> dict[str, Any]:
         """Generate MP3 or OGG/Opus (requires FFmpeg) and return a local file path.
 
@@ -190,8 +191,18 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         highlighting/editing. Missing boundary events return audio with warnings,
         never estimated timings. Profiles are rate presets, not emotional styles.
         Explicit voice/rate/volume/pitch override configured defaults/presets.
-        Audio is always created; subtitles and word timings are optional sidecar files.
+        Optional target_duration_seconds fits the clip with FFmpeg, verified by FFprobe.
+        Omitted parameters inherit config.py ENV defaults (built-in tempo 0.5–2.0).
+        Set tempo_min/tempo_max for the task (immutable technical limits 0.5–2.0).
+        Bounds are never widened automatically; retry explicitly to change them.
+        Unreachable targets return target_duration_unreachable with required tempo and bounds,
+        not original audio. Without a target, tempo bounds do not change audio.
+        Check duration_fitting.target_met and warnings; precise sync/natural speech
+        are not guaranteed. Timings are rescaled using the applied tempo.
+        Successful requests create audio; subtitles and word timings are optional sidecar files.
         Timeout includes queue wait, synthesis, conversion and sidecars. Up to 100000 characters;
+        max_audio_duration_seconds limits clip length independently of the operation timeout.
+        Targets must not exceed that duration limit; oversized output is not trimmed or published.
         for long jobs increase timeout and client's deadline or shorten text.
         Check success/warnings before using audio_path, subtitle_path or
         word_timings_path. Paths are local to the MCP host, not uploaded.
@@ -208,6 +219,10 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             subtitles,
             word_timings,
             profile,
+            target_duration_seconds,
+            tempo_min,
+            tempo_max,
+            max_audio_duration_seconds,
             semaphore=semaphore,
         )
 

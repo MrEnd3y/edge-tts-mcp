@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from edge_tts_mcp import audio, cli, server, service
-from edge_tts_mcp.service import Settings, synthesize
+from edge_tts_mcp.core import audio, cli, server, service
+from edge_tts_mcp.core.service import Settings, synthesize
 
 
 async def test_postprocessing_deadline_does_not_publish_success(

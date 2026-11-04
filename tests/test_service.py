@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock
 import edge_tts
 import pytest
 
-from edge_tts_mcp import audio, service
-from edge_tts_mcp.audio import validate_audio
-from edge_tts_mcp.service import Settings, synthesize
+from edge_tts_mcp.core import audio, service
+from edge_tts_mcp.core.audio import validate_audio
+from edge_tts_mcp.core.service import Settings, synthesize
 
 VOICE = "ru-RU-SvetlanaNeural"
 

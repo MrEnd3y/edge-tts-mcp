@@ -1,4 +1,4 @@
-"""Local audio validation and optional FFmpeg conversion."""
+"""Local audio validation, FFmpeg encoding, and FFprobe duration checks."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from pathlib import Path
 import anyio
 from mutagen.mp3 import MP3
 from mutagen.oggopus import OggOpus
+
+from ..config import TECHNICAL_TEMPO_MAX, TECHNICAL_TEMPO_MIN
 
 logger = logging.getLogger(__name__)
 PROCESS_CLEANUP_TIMEOUT = 5
@@ -38,12 +40,55 @@ def validate_audio(path: Path, audio_format: str) -> tuple[int, float]:
     return size, duration
 
 
-def find_ffmpeg(executable: str) -> str:
+def find_ffmpeg(executable: str, *, duration_fitting: bool = False) -> str:
     """Resolve only the configured executable; never invoke a shell."""
     resolved = shutil.which(executable)
     if resolved is None:
+        if duration_fitting:
+            raise AudioError("Audio duration fitting requires FFmpeg; set EDGE_TTS_FFMPEG")
         raise AudioError("OGG/Opus requires FFmpeg with libopus; set EDGE_TTS_FFMPEG")
     return resolved
+
+
+def find_ffprobe(executable: str) -> str:
+    """Resolve only the configured probe when duration fitting needs it."""
+    resolved = shutil.which(executable)
+    if resolved is None:
+        raise AudioError("Audio duration fitting requires FFprobe; set EDGE_TTS_FFPROBE")
+    return resolved
+
+
+async def probe_duration(ffprobe: str, path: Path) -> float:
+    """Read local container duration without exposing probe output or errors."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            ffprobe,
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            "file,pipe",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await process.communicate()
+        finally:
+            if process.returncode is None:
+                await _stop_encoder(process)
+        if process.returncode != 0:
+            raise ValueError("probe failed")
+        duration = float(stdout)
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("invalid duration")
+    except (OSError, ValueError):
+        raise AudioError("FFprobe could not verify audio duration") from None
+    return duration
 
 
 async def _stop_encoder(process: asyncio.subprocess.Process) -> None:
@@ -66,13 +111,41 @@ async def _stop_encoder(process: asyncio.subprocess.Process) -> None:
         try:
             waiter.result()
         except (TimeoutError, OSError):
-            logger.warning("FFmpeg cleanup did not complete within its bounded wait")
+            logger.warning("Media process cleanup did not complete within its bounded wait")
     if interrupted:
         raise asyncio.CancelledError
 
 
 async def convert_to_opus(ffmpeg: str, source: Path, destination: Path) -> None:
     """Convert local MP3 to mono OGG/Opus; kill/reap FFmpeg on cancellation."""
+    await _encode(ffmpeg, source, destination, "ogg")
+
+
+async def adjust_tempo(
+    ffmpeg: str, source: Path, destination: Path, audio_format: str, tempo: float
+) -> None:
+    """Encode to a separate file with atempo; never overwrite the original."""
+    if (
+        source == destination
+        or not math.isfinite(tempo)
+        or not TECHNICAL_TEMPO_MIN <= tempo <= TECHNICAL_TEMPO_MAX
+    ):
+        raise AudioError("Invalid audio duration fitting parameters")
+    await _encode(ffmpeg, source, destination, audio_format, tempo)
+
+
+async def _encode(
+    ffmpeg: str,
+    source: Path,
+    destination: Path,
+    audio_format: str,
+    tempo: float | None = None,
+) -> None:
+    codec = (
+        ["-c:a", "libopus", "-b:a", "48k", "-ar", "48000", "-ac", "1", "-application", "voip"]
+        if audio_format == "ogg"
+        else ["-c:a", "libmp3lame", "-b:a", "48k"]
+    )
     process = await asyncio.create_subprocess_exec(
         ffmpeg,
         "-nostdin",
@@ -87,18 +160,10 @@ async def convert_to_opus(ffmpeg: str, source: Path, destination: Path) -> None:
         "-map",
         "0:a:0",
         "-vn",
-        "-c:a",
-        "libopus",
-        "-b:a",
-        "48k",
-        "-ar",
-        "48000",
-        "-ac",
-        "1",
-        "-application",
-        "voip",
+        *(["-af", f"atempo={tempo!r}"] if tempo is not None else []),
+        *codec,
         "-f",
-        "ogg",
+        audio_format,
         str(destination),
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
@@ -110,4 +175,6 @@ async def convert_to_opus(ffmpeg: str, source: Path, destination: Path) -> None:
         if process.returncode is None:
             await _stop_encoder(process)
     if process.returncode != 0:
+        if tempo is not None:
+            raise AudioError("FFmpeg duration fitting failed; check the required audio encoder")
         raise AudioError("FFmpeg conversion failed; check that FFmpeg supports libopus")

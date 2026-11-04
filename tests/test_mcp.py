@@ -10,9 +10,9 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from edge_tts_mcp import server
-from edge_tts_mcp.server import create_server
-from edge_tts_mcp.service import Settings
+from edge_tts_mcp.core import server
+from edge_tts_mcp.core.server import create_server
+from edge_tts_mcp.core.service import Settings
 
 
 async def test_voice_filter(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:

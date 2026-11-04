@@ -12,6 +12,7 @@ output/
 uv.lock
 .env
 .env.*
+!.env.example
 *.env
 *.mp3
 *.ogg

@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from edge_tts_mcp import server, service
-from edge_tts_mcp.server import create_server, settings_from_environment
-from edge_tts_mcp.service import Settings, synthesize
+from edge_tts_mcp.core import server, service
+from edge_tts_mcp.core.server import create_server, settings_from_environment
+from edge_tts_mcp.core.service import Settings, synthesize
 
 
 def metadata_save(monkeypatch: pytest.MonkeyPatch, mp3_bytes: bytes, events: bool = True) -> None:

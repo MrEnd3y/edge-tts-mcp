@@ -6,7 +6,7 @@ from pathlib import Path
 import imageio_ffmpeg
 import pytest
 
-from edge_tts_mcp.service import Settings
+from edge_tts_mcp.config import Settings
 
 
 @pytest.fixture(scope="session")

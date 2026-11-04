@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from edge_tts_mcp.timings import TimingError, Word, read_words, render_subtitles
+from edge_tts_mcp.core.timings import TimingError, Word, read_words, render_subtitles
 
 
 def test_word_events_to_milliseconds(tmp_path: Path) -> None:

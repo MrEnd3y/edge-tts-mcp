@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,27 @@ def _join(words: list[Word]) -> str:
     text = " ".join(" ".join(word.text.split()) for word in words)
     text = re.sub(r"\s+([,.!?;:，。！？、；：])", r"\1", text)
     return re.sub(r"(?<=[\u3400-\u9fff\u3040-\u30ff]) (?=[\u3400-\u9fff\u3040-\u30ff])", "", text)
+
+
+def rescale_words(words: list[Word], tempo: float, duration: float) -> list[Word]:
+    """Scale using the applied tempo, refusing collapsed or out-of-bounds events."""
+    if not math.isfinite(tempo) or tempo <= 0 or not math.isfinite(duration) or duration <= 0:
+        raise TimingError("Invalid timing scale or audio duration")
+    scaled = [
+        Word(word.text, round(word.start_ms / tempo), round(word.end_ms / tempo)) for word in words
+    ]
+    previous_end = 0
+    if not scaled:
+        raise TimingError("No word events to scale")
+    for word in scaled:
+        if (
+            word.start_ms < previous_end
+            or word.end_ms <= word.start_ms
+            or word.end_ms > round(duration * 1000)
+        ):
+            raise TimingError("Scaled word events are invalid or exceed audio duration")
+        previous_end = word.end_ms
+    return scaled
 
 
 def _timestamp(milliseconds: int, separator: str) -> str:

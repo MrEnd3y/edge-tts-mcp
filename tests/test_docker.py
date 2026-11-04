@@ -1,4 +1,4 @@
-"""Opt-in Linux container smoke tests, with no calls to Microsoft or Telegram."""
+"""Opt-in container smoke tests; marked live cases also contact Microsoft."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from edge_tts_mcp.audio import validate_audio
+from edge_tts_mcp.core.audio import validate_audio
 
 pytestmark = [
     pytest.mark.docker,
@@ -35,16 +35,42 @@ def test_nonroot_container_encodes_real_mp3_and_opus() -> None:
     script = """
 import asyncio, json, os, subprocess, tempfile
 from pathlib import Path
-from edge_tts_mcp.audio import validate_audio, convert_to_opus
+from edge_tts_mcp.core.audio import validate_audio, convert_to_opus, probe_duration
+from edge_tts_mcp.core import service
+from edge_tts_mcp.config import Settings
 with tempfile.TemporaryDirectory() as root:
     mp3, ogg = Path(root) / 'tone.mp3', Path(root) / 'tone.ogg'
     subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
-                    'sine=frequency=440:duration=0.3', '-c:a', 'libmp3lame', str(mp3)],
+                    'sine=frequency=440:duration=3', '-c:a', 'libmp3lame', str(mp3)],
                    check=True, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     asyncio.run(asyncio.wait_for(convert_to_opus('/usr/bin/ffmpeg', mp3, ogg), 10))
     mp3_size, _ = validate_audio(mp3, 'mp3')
     ogg_size, _ = validate_audio(ogg, 'ogg')
-    print(json.dumps({'uid': os.getuid(), 'mp3_bytes': mp3_size, 'ogg_bytes': ogg_size}))
+    original = validate_audio(mp3, 'mp3')[1]
+    content = mp3.read_bytes()
+    async def save(self, filename):
+        Path(filename).write_bytes(content)
+    service.edge_tts.Communicate.save = save
+    settings = Settings(Path(root) / 'published')
+    fitted = 0
+    for fmt in ('mp3', 'ogg'):
+        for tempo in (0.5, 0.9, 1.1, 2.0):
+            target = original / tempo
+            result = asyncio.run(service.synthesize(settings, 'Offline tone test',
+                                 audio_format=fmt, target_duration_seconds=target, timeout=10))
+            assert result['success'], result
+            output = Path(result['audio_path'])
+            validate_audio(output, fmt)
+            actual = asyncio.run(probe_duration('/usr/bin/ffprobe', output))
+            within_tolerance = abs(actual - target) <= max(0.05, target * 0.01)
+            assert result['duration_fitting']['target_met'] == within_tolerance, result
+            assert abs(result['tempo'] - tempo) < 1e-12
+            if not within_tolerance:
+                assert any(w['code'] == 'duration_mismatch' for w in result['warnings']), result
+            assert mp3.read_bytes() == content
+            assert not list(settings.output_dir.glob('.edge-tts-*'))
+            fitted += 1
+    print(json.dumps({'uid': os.getuid(), 'mp3_bytes': mp3_size, 'ogg_bytes': ogg_size, 'fitted': fitted}))
 """
     result = subprocess.run(
         ["docker", "run", "--rm", *HARDENING, "--entrypoint", "python", IMAGE, "-c", script],
@@ -56,6 +82,7 @@ with tempfile.TemporaryDirectory() as root:
     data = json.loads(result.stdout)
     assert data["uid"] != 0
     assert data["mp3_bytes"] > 0 and data["ogg_bytes"] > 0
+    assert data["fitted"] == 8
 
 
 async def test_container_stdio_protocol() -> None:
@@ -74,6 +101,7 @@ async def test_container_stdio_protocol() -> None:
                 }
                 capabilities = await session.call_tool("get_capabilities", {})
                 assert capabilities.structuredContent["ffmpeg_available"] is True
+                assert capabilities.structuredContent["ffprobe_available"] is True
                 rejected = await session.call_tool("tts", {"text": " "})
                 assert rejected.structuredContent["error_code"] == "invalid_input"
 
@@ -112,8 +140,9 @@ def test_named_volume_persists_private_output() -> None:
 @pytest.mark.live
 @pytest.mark.skipif(os.environ.get("EDGE_TTS_LIVE_TESTS") != "1", reason="Network tests disabled")
 @pytest.mark.parametrize("audio_format,subtitles", [("mp3", "srt"), ("ogg", "vtt")])
+@pytest.mark.parametrize("tempo", [None, 0.9, 1.1])
 async def test_container_live_speech_and_sidecars(
-    tmp_path: Path, audio_format: str, subtitles: str
+    tmp_path: Path, audio_format: str, subtitles: str, tempo: float | None
 ) -> None:
     parameters = StdioServerParameters(
         command="docker",
@@ -146,6 +175,30 @@ async def test_container_live_speech_and_sidecars(
                 result = response.structuredContent
                 assert not response.isError and result["success"], result
                 assert not result.get("warnings"), result
+                if tempo is not None:
+                    target = result["duration_seconds"] / tempo
+                    response = await session.call_tool(
+                        "tts",
+                        {
+                            "text": "Привет! Проверяем синтез речи внутри контейнера.",
+                            "voice": "ru-RU-SvetlanaNeural",
+                            "audio_format": audio_format,
+                            "subtitles": subtitles,
+                            "word_timings": True,
+                            "target_duration_seconds": target,
+                            "timeout": 60,
+                        },
+                    )
+                    result = response.structuredContent
+                    assert not response.isError and result["success"], result
+                    assert not result.get("warnings"), result
+                    fitting = result["duration_fitting"]
+                    assert fitting["processed"] and fitting["target_met"], result
+                    assert abs(fitting["actual_duration_seconds"] - target) <= max(
+                        0.05, target * 0.01
+                    )
+                    assert result["tempo"] == fitting["applied_tempo"]
+                    assert (result["tempo"] < 1) if tempo < 1 else (result["tempo"] > 1)
     # Explicit host/container mapping is part of this test, not an automatic
     # translation promised by the MCP server to arbitrary clients.
     audio = tmp_path / Path(result["audio_path"]).name
@@ -157,4 +210,4 @@ async def test_container_live_speech_and_sidecars(
     assert subtitle.read_text(encoding="utf-8").startswith("WEBVTT") == (subtitles == "vtt")
     words = json.loads(timing.read_text(encoding="utf-8"))
     assert len(words) >= 5 and words[-1]["end_ms"] <= duration * 1000 + 500
-    assert len(list(tmp_path.iterdir())) == 3
+    assert len(list(tmp_path.iterdir())) == (3 if tempo is None else 6)

@@ -6,7 +6,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 
 from edge_tts_mcp import __version__
-from edge_tts_mcp.cli import main
+from edge_tts_mcp.core.cli import main
 
 
 def test_package_metadata_and_entrypoint_match_source() -> None:

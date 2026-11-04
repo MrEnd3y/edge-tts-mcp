@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from edge_tts_mcp.server import create_server
-from edge_tts_mcp.service import Settings, synthesize
+from edge_tts_mcp.core.server import create_server
+from edge_tts_mcp.core.service import Settings, synthesize
 
 pytestmark = [
     pytest.mark.live,
