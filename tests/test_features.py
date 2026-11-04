@@ -133,17 +133,31 @@ async def test_long_unicode_text_uses_library_chunking(
     assert result["characters"] == len(text) > 5000
 
 
-async def test_defaults_profile_and_explicit_overrides(
+async def test_defaults_and_explicit_overrides(
     monkeypatch: pytest.MonkeyPatch, settings: Settings, mp3_bytes: bytes
 ) -> None:
     metadata_save(monkeypatch, mp3_bytes)
-    configured = replace(settings, voice="en-US-AriaNeural", rate="+5%")
+    configured = replace(settings, voice="en-US-AriaNeural", rate="+5%", volume="-5%", pitch="+1Hz")
     result = await synthesize(configured, "hello")
     assert result["voice"] == "en-US-AriaNeural" and result["rate"] == "+5%"
-    result = await synthesize(configured, "hello", profile="slow", pitch="+2Hz")
+    assert result["volume"] == "-5%" and result["pitch"] == "+1Hz"
+    result = await synthesize(configured, "hello", rate="-25%", pitch="+2Hz")
     assert result["rate"] == "-25%" and result["pitch"] == "+2Hz"
-    result = await synthesize(configured, "hi", profile="notification", rate="-5%")
-    assert result["rate"] == "-5%"
+    assert result["volume"] == "-5%"
+    result = await synthesize(
+        configured, "hi", voice="ru-RU-SvetlanaNeural", rate="+15%", volume="+10%"
+    )
+    assert result["voice"] == "ru-RU-SvetlanaNeural" and result["rate"] == "+15%"
+    assert result["volume"] == "+10%" and result["pitch"] == "+1Hz"
+    assert "profile" not in result
+
+
+async def test_profile_removed_from_mcp_surface(settings: Settings) -> None:
+    mcp = create_server(settings)
+    tool = next(tool for tool in await mcp.list_tools() if tool.name == "tts")
+    assert "profile" not in tool.inputSchema["properties"]
+    _text, capabilities = await mcp.call_tool("get_capabilities", {})
+    assert "profiles" not in capabilities
 
 
 async def test_rich_catalog_search_and_pagination(
@@ -263,7 +277,7 @@ async def test_timings_beyond_audio_are_not_published(
     assert "subtitle_path" not in result and "word_timings_path" not in result
 
 
-@pytest.mark.parametrize("options", [{"subtitles": "ass"}, {"profile": "unknown"}])
+@pytest.mark.parametrize("options", [{"subtitles": "ass"}])
 async def test_unknown_optional_arguments(settings: Settings, options: dict) -> None:
     result = await synthesize(settings, "hi", **options)
     assert result["error_code"] == "invalid_input"

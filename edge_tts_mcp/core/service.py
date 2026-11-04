@@ -29,15 +29,9 @@ from .timings import SubtitleFormat, TimingError, read_words, render_subtitles, 
 
 logger = logging.getLogger(__name__)
 AudioFormat = Literal["mp3", "ogg"]
-SpeechProfile = Literal["default", "narration", "notification", "slow"]
 MAX_TEXT_LENGTH = 100_000
 DURATION_TOLERANCE_SECONDS = 0.05
 DURATION_TOLERANCE_FRACTION = 0.01
-PROFILES = {
-    "narration": {"rate": "-10%", "volume": "+0%", "pitch": "+0Hz"},
-    "notification": {"rate": "+15%", "volume": "+0%", "pitch": "+0Hz"},
-    "slow": {"rate": "-25%", "volume": "+0%", "pitch": "+0Hz"},
-}
 
 
 def failure(code: str, message: str) -> dict:
@@ -67,7 +61,6 @@ async def synthesize(
     timeout: float | None = None,
     subtitles: SubtitleFormat = "none",
     word_timings: bool = False,
-    profile: SpeechProfile = "default",
     target_duration_seconds: float | None = None,
     tempo_min: float | None = None,
     tempo_max: float | None = None,
@@ -88,15 +81,10 @@ async def synthesize(
         return failure(
             "invalid_input", f"Text must contain 1–{MAX_TEXT_LENGTH} characters and not be blank"
         )
-    if profile != "default" and profile not in PROFILES:
-        return failure("invalid_input", "Unknown speech profile")
-    defaults = PROFILES.get(
-        profile, {"rate": settings.rate, "volume": settings.volume, "pitch": settings.pitch}
-    )
     voice = settings.voice if voice is None else voice
-    rate = defaults["rate"] if rate is None else rate
-    volume = defaults["volume"] if volume is None else volume
-    pitch = defaults["pitch"] if pitch is None else pitch
+    rate = settings.rate if rate is None else rate
+    volume = settings.volume if volume is None else volume
+    pitch = settings.pitch if pitch is None else pitch
     if not voice.strip():
         return failure("invalid_input", "Voice cannot be empty")
     if (
@@ -174,7 +162,6 @@ async def synthesize(
                 "rate": rate,
                 "volume": volume,
                 "pitch": pitch,
-                "profile": profile,
                 "characters": len(text),
             }
             size, duration = validate_audio(mp3_path, "mp3")
@@ -327,9 +314,7 @@ async def synthesize(
             completed = True
             return result
     except TimeoutError:
-        return failure(
-            "timeout", f"Synthesis/conversion timed out (overall budget: {timeout:g} seconds)"
-        )
+        return failure("timeout", f"Synthesis/conversion timed out (timeout: {timeout:g} seconds)")
     except edge_tts.exceptions.NoAudioReceived:
         return failure("no_audio", "Microsoft returned no audio; check the voice or retry later")
     except AudioError as exc:

@@ -18,9 +18,7 @@ from .service import (
     DURATION_TOLERANCE_FRACTION,
     DURATION_TOLERANCE_SECONDS,
     MAX_TEXT_LENGTH,
-    PROFILES,
     AudioFormat,
-    SpeechProfile,
     synthesize,
 )
 from .timings import SubtitleFormat
@@ -82,7 +80,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
     async def get_capabilities() -> dict[str, Any]:
-        """Read local speech formats, optional artifacts, profiles and defaults; no network request.
+        """Read local speech formats, optional artifacts and defaults; no network request.
 
         ffmpeg_available checks executable presence, not libopus support. Telegram
         delivery is the client's responsibility. Long text uses edge-tts internal
@@ -122,7 +120,6 @@ def create_server(settings: Settings | None = None) -> FastMCP:
                 "timeout": settings.timeout,
                 "max_audio_duration_seconds": settings.max_audio_duration_seconds,
             },
-            "profiles": {"default": "Configured settings", **PROFILES},
             "delivery": "local_paths_only",
         }
 
@@ -166,7 +163,6 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         ] = request_defaults.timeout,
         subtitles: SubtitleFormat = "none",
         word_timings: bool = False,
-        profile: SpeechProfile = "default",
         target_duration_seconds: Annotated[
             float | None,
             Field(gt=0, allow_inf_nan=False, strict=True),
@@ -189,9 +185,9 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         Ordinary speech/Telegram: leave subtitles=none and word_timings=false.
         Request srt/vtt only for captions; request word_timings only for per-word
         highlighting/editing. Missing boundary events return audio with warnings,
-        never estimated timings. Profiles are rate presets, not emotional styles.
-        Explicit voice/rate/volume/pitch override configured defaults/presets.
-        Optional target_duration_seconds fits the clip with FFmpeg, verified by FFprobe.
+        never estimated timings. Explicit voice/rate/volume/pitch override server defaults.
+        Choose rate directly for the task, e.g. +15% or -10%.
+        Optional target_duration_seconds fits audio duration with FFmpeg, verified by FFprobe.
         Omitted parameters inherit config.py ENV defaults (built-in tempo 0.5–2.0).
         Set tempo_min/tempo_max for the task (immutable technical limits 0.5–2.0).
         Bounds are never widened automatically; retry explicitly to change them.
@@ -201,7 +197,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         are not guaranteed. Timings are rescaled using the applied tempo.
         Successful requests create audio; subtitles and word timings are optional sidecar files.
         Timeout includes queue wait, synthesis, conversion and sidecars. Up to 100000 characters;
-        max_audio_duration_seconds limits clip length independently of the operation timeout.
+        max_audio_duration_seconds limits audio duration independently of the operation timeout.
         Targets must not exceed that duration limit; oversized output is not trimmed or published.
         for long jobs increase timeout and client's deadline or shorten text.
         Check success/warnings before using audio_path, subtitle_path or
@@ -218,7 +214,6 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             timeout,
             subtitles,
             word_timings,
-            profile,
             target_duration_seconds,
             tempo_min,
             tempo_max,

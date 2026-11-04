@@ -20,7 +20,7 @@ DEFAULT_TEMPO_MIN = 0.5
 DEFAULT_TEMPO_MAX = 2.0
 MAX_TIMEOUT_SECONDS = 300
 DEFAULT_TIMEOUT_SECONDS = 45.0
-# Clip length is independent of the wall-clock operation budget.
+# Audio duration and the operation timeout are independent settings.
 DEFAULT_MAX_AUDIO_DURATION_SECONDS = 300.0
 DEFAULT_OUTPUT_DIR = Path.home() / ".edge-tts-mcp" / "output"
 
