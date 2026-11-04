@@ -1,8 +1,9 @@
 services:
-  edge-voice-mcp:
-    image: edge-voice-mcp:local
+  edge-tts-mcp:
+    image: edge-tts-mcp:local
     build:
       context: .
+      dockerfile: Dockerfile
     stdin_open: true
     tty: false
     init: true

@@ -7,18 +7,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 FROM python-base AS builder
 
 WORKDIR /build
-COPY requirements-runtime.txt ./
-# Download only pinned, hash-verified runtime wheels. Fail clearly rather than
-# silently introducing a compiler toolchain for an unsupported architecture.
-RUN python -m pip wheel --no-cache-dir --require-hashes --no-deps \
-    --only-binary=:all: --wheel-dir /wheels -r requirements-runtime.txt
+COPY requirements.txt ./
+RUN python -m pip wheel --no-cache-dir \
+    --only-binary=:all: --wheel-dir /wheels -r requirements.txt
 
 COPY pyproject.toml README.md LICENSE ./
-COPY src/ ./src/
+COPY edge_tts_mcp/ ./edge_tts_mcp/
 RUN python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels . \
     && python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir --no-index \
-        --find-links=/wheels /wheels/edge_voice_mcp-*.whl \
+        --find-links=/wheels /wheels/edge_tts_mcp-*.whl \
     && /opt/venv/bin/python -m pip check
 
 FROM python-base AS runtime
@@ -50,4 +48,4 @@ USER app:app
 STOPSIGNAL SIGINT
 
 # stdio MCP: use docker run -i, never -t. No HTTP port is needed.
-ENTRYPOINT ["edge-voice-mcp"]
+ENTRYPOINT ["edge-tts-mcp"]

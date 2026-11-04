@@ -10,9 +10,9 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from edge_voice_mcp import server
-from edge_voice_mcp.server import create_server
-from edge_voice_mcp.service import Settings
+from edge_tts_mcp import server
+from edge_tts_mcp.server import create_server
+from edge_tts_mcp.service import Settings
 
 
 async def test_voice_filter(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
@@ -48,10 +48,11 @@ async def test_voice_listing_error_sanitized(
 
 
 @pytest.mark.parametrize("disabled", [False, True])
-async def test_stdio_protocol(tmp_path: Path, disabled: bool) -> None:
+@pytest.mark.parametrize("entrypoint", [["-m", "edge_tts_mcp"], ["main.py"]])
+async def test_stdio_protocol(tmp_path: Path, disabled: bool, entrypoint: list[str]) -> None:
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "edge_voice_mcp", "--output-dir", str(tmp_path)]
+        args=[*entrypoint, "--output-dir", str(tmp_path)]
         + (["--disable-sidecars", "--voice", "en-US-AriaNeural"] if disabled else []),
     )
     async with asyncio.timeout(20):
@@ -74,6 +75,8 @@ async def test_stdio_protocol(tmp_path: Path, disabled: bool) -> None:
                     assert rejected.structuredContent["error_code"] == "feature_disabled"
                 assert schema["properties"]["subtitles"]["default"] == "none"
                 assert schema["properties"]["word_timings"]["default"] is False
+                assert "save_audio" not in schema["properties"]
+                assert "artifacts_without_audio" not in capabilities.structuredContent
                 result = await session.call_tool("tts", {"text": "hi", "timeout": 0})
                 assert result.isError
     assert list(tmp_path.iterdir()) == []

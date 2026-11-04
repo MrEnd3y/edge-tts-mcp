@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from edge_voice_mcp import audio, server, service
-from edge_voice_mcp.service import Settings, synthesize
+from edge_tts_mcp import audio, cli, server, service
+from edge_tts_mcp.service import Settings, synthesize
 
 
 async def test_postprocessing_deadline_does_not_publish_success(
@@ -172,9 +172,9 @@ def test_cli_config_error_has_no_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     monkeypatch.setenv("EDGE_TTS_ALLOW_SIDECARS", "invalid-private-details")
-    monkeypatch.setattr(sys, "argv", ["edge-voice-mcp"])
+    monkeypatch.setattr(sys, "argv", ["edge-tts-mcp"])
     with pytest.raises(SystemExit) as exc:
-        server.main()
+        cli.main()
     assert exc.value.code == 2
     output = capsys.readouterr()
     assert not output.out and "EDGE_TTS_ALLOW_SIDECARS" in output.err
@@ -186,12 +186,12 @@ def test_cli_dispatches_stdio_with_explicit_settings(
 ) -> None:
     instance = Mock()
     factory = Mock(return_value=instance)
-    monkeypatch.setattr(server, "create_server", factory)
+    monkeypatch.setattr(cli, "create_server", factory)
     monkeypatch.setattr(
         sys,
         "argv",
         [
-            "edge-voice-mcp",
+            "edge-tts-mcp",
             "--output-dir",
             str(tmp_path),
             "--voice",
@@ -199,7 +199,7 @@ def test_cli_dispatches_stdio_with_explicit_settings(
             "--disable-sidecars",
         ],
     )
-    server.main()
+    cli.main()
     settings = factory.call_args.args[0]
     assert settings.output_dir == tmp_path and settings.voice == "en-US-AriaNeural"
     assert settings.allow_sidecars is False

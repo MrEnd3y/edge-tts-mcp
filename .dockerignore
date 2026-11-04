@@ -1,12 +1,10 @@
-# Allowlist build inputs. Exclude unrelated configuration, Git data,
-# comparisons, outputs and local environments from the build context.
+# Include only package and container build inputs.
 **
 !Dockerfile
 !.dockerignore
 !pyproject.toml
-!requirements-runtime.txt
+!requirements.txt
 !README.md
 !LICENSE
-!src/
-!src/edge_voice_mcp/
-!src/edge_voice_mcp/*.py
+!edge_tts_mcp/
+!edge_tts_mcp/*.py

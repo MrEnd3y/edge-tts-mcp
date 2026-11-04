@@ -1,8 +1,7 @@
-"""Official MCP Python SDK stdio entry point; stdout is protocol-only."""
+"""MCP stdio tools and server configuration; stdout is protocol-only."""
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import os
 import shutil
@@ -18,7 +17,7 @@ from . import __version__
 from .service import MAX_TEXT_LENGTH, PROFILES, AudioFormat, Settings, SpeechProfile, synthesize
 from .timings import SubtitleFormat
 
-DEFAULT_OUTPUT_DIR = Path.home() / ".edge-voice-mcp" / "output"
+DEFAULT_OUTPUT_DIR = Path.home() / ".edge-tts-mcp" / "output"
 
 
 def _filter_voices(
@@ -96,11 +95,11 @@ def settings_from_environment(
 
 
 def create_server(settings: Settings | None = None) -> FastMCP:
-    """Create an isolated server; configuration never changes Hermes settings."""
+    """Create an isolated stdio MCP server."""
     settings = settings or settings_from_environment()
     semaphore = asyncio.Semaphore(settings.max_concurrent)
     mcp = FastMCP(
-        "edge-voice-mcp",
+        "edge-tts-mcp",
         instructions=(
             "Create local speech audio for the client to deliver. Use list_voice to choose a voice "
             "when the task specifies a language/gender. Use get_capabilities for local limits/defaults. "
@@ -191,6 +190,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         highlighting/editing. Missing boundary events return audio with warnings,
         never estimated timings. Profiles are rate presets, not emotional styles.
         Explicit voice/rate/volume/pitch override configured defaults/presets.
+        Audio is always created; subtitles and word timings are optional sidecar files.
         Timeout includes queue wait, synthesis, conversion and sidecars. Up to 100000 characters;
         for long jobs increase timeout and client's deadline or shorten text.
         Check success/warnings before using audio_path, subtitle_path or
@@ -212,33 +212,3 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         )
 
     return mcp
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Async Microsoft Edge TTS MCP server (stdio)")
-    parser.add_argument("--version", action="version", version=__version__)
-    parser.add_argument("--output-dir", type=Path, help="Override EDGE_TTS_OUTPUT_DIR")
-    parser.add_argument("--ffmpeg", help="Override EDGE_TTS_FFMPEG executable path")
-    parser.add_argument("--voice", help="Override EDGE_TTS_VOICE default voice")
-    parser.add_argument(
-        "--max-concurrent", type=int, help="Concurrent synthesis limit (1–16); default 2"
-    )
-    parser.add_argument(
-        "--disable-sidecars", action="store_true", help="Reject subtitle/timing requests"
-    )
-    args = parser.parse_args()
-    try:
-        settings = settings_from_environment(
-            output_dir=args.output_dir,
-            ffmpeg=args.ffmpeg,
-            voice=args.voice,
-            disable_sidecars=args.disable_sidecars,
-            max_concurrent=args.max_concurrent,
-        )
-    except ValueError as exc:
-        parser.error(str(exc))
-    create_server(settings).run(transport="stdio")
-
-
-if __name__ == "__main__":
-    main()

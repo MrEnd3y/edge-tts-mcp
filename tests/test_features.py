@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from edge_voice_mcp import server, service
-from edge_voice_mcp.server import create_server, settings_from_environment
-from edge_voice_mcp.service import Settings, synthesize
+from edge_tts_mcp import server, service
+from edge_tts_mcp.server import create_server, settings_from_environment
+from edge_tts_mcp.service import Settings, synthesize
 
 
 def metadata_save(monkeypatch: pytest.MonkeyPatch, mp3_bytes: bytes, events: bool = True) -> None:
@@ -47,7 +47,7 @@ def metadata_save(monkeypatch: pytest.MonkeyPatch, mp3_bytes: bytes, events: boo
         ("vtt", True),
     ],
 )
-async def test_requested_sidecars_only(
+async def test_audio_with_requested_sidecars(
     monkeypatch: pytest.MonkeyPatch,
     settings: Settings,
     mp3_bytes: bytes,
@@ -59,6 +59,12 @@ async def test_requested_sidecars_only(
         settings, "Привет мир!", subtitles=subtitle_format, word_timings=word_timings
     )
     assert result["success"], result
+    assert result["path"] == result["audio_path"]
+    assert result["format"] == "mp3" and result["mime_type"] == "audio/mpeg"
+    audio = Path(result["audio_path"])
+    assert audio.read_bytes() == mp3_bytes
+    assert audio.stat().st_size == result["size"]
+    assert result["duration_seconds"] > 0
     assert ("word_timings_path" in result) == word_timings
     assert ("subtitle_path" in result) == (subtitle_format != "none")
     if word_timings:

@@ -7,7 +7,9 @@ dist/
 *.egg-info/
 output/
 .ruff_cache/
-.comparison/
+.uv-cache/
+.live-test-output/
+uv.lock
 .env
 .env.*
 *.env

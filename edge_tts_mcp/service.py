@@ -94,7 +94,7 @@ async def synthesize(
     *,
     semaphore: asyncio.Semaphore | None = None,
 ) -> dict:
-    """Save, validate, optionally convert, and publish audio with requested sidecars."""
+    """Publish audio with optional subtitle and word timing files."""
     if not text.strip() or len(text) > MAX_TEXT_LENGTH:
         return failure(
             "invalid_input", f"Text must contain 1–{MAX_TEXT_LENGTH} characters and not be blank"
@@ -152,23 +152,10 @@ async def synthesize(
             else:
                 await communicate.save(str(mp3_path))
             await _checkpoint(deadline)
-            size, duration = validate_audio(mp3_path, "mp3")
-            result_path = mp3_path
-            if ffmpeg is not None:
-                result_path = Path(work.name) / "speech.ogg"
-                await convert_to_opus(ffmpeg, mp3_path, result_path)
-                size, duration = validate_audio(result_path, "ogg")
             stem = f"edge-tts-{uuid.uuid4().hex}"
-            final_path = directory / f"{stem}.{audio_format}"
-            outputs = [(result_path, final_path)]
+            outputs: list[tuple[Path, Path]] = []
             result = {
                 "success": True,
-                "path": str(final_path),
-                "audio_path": str(final_path),
-                "size": size,
-                "duration_seconds": round(duration, 3),
-                "format": audio_format,
-                "mime_type": "audio/mpeg" if audio_format == "mp3" else "audio/ogg",
                 "voice": voice.strip(),
                 "rate": rate,
                 "volume": volume,
@@ -176,6 +163,22 @@ async def synthesize(
                 "profile": profile,
                 "characters": len(text),
             }
+            size, duration = validate_audio(mp3_path, "mp3")
+            result_path = mp3_path
+            if ffmpeg is not None:
+                result_path = Path(work.name) / "speech.ogg"
+                await convert_to_opus(ffmpeg, mp3_path, result_path)
+                size, duration = validate_audio(result_path, "ogg")
+            final_path = directory / f"{stem}.{audio_format}"
+            outputs.append((result_path, final_path))
+            result.update(
+                path=str(final_path),
+                audio_path=str(final_path),
+                size=size,
+                duration_seconds=round(duration, 3),
+                format=audio_format,
+                mime_type="audio/mpeg" if audio_format == "mp3" else "audio/ogg",
+            )
             if needs_metadata:
                 try:
                     words = read_words(metadata_path)

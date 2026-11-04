@@ -13,7 +13,7 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from edge_voice_mcp.audio import validate_audio
+from edge_tts_mcp.audio import validate_audio
 
 pytestmark = [
     pytest.mark.docker,
@@ -21,7 +21,7 @@ pytestmark = [
         os.environ.get("EDGE_TTS_DOCKER_TESTS") != "1", reason="Docker tests disabled"
     ),
 ]
-IMAGE = os.environ.get("EDGE_TTS_DOCKER_IMAGE", "edge-voice-mcp:local")
+IMAGE = os.environ.get("EDGE_TTS_DOCKER_IMAGE", "edge-tts-mcp:local")
 HARDENING = [
     "--read-only",
     "--cap-drop=ALL",
@@ -35,7 +35,7 @@ def test_nonroot_container_encodes_real_mp3_and_opus() -> None:
     script = """
 import asyncio, json, os, subprocess, tempfile
 from pathlib import Path
-from edge_voice_mcp.audio import validate_audio, convert_to_opus
+from edge_tts_mcp.audio import validate_audio, convert_to_opus
 with tempfile.TemporaryDirectory() as root:
     mp3, ogg = Path(root) / 'tone.mp3', Path(root) / 'tone.ogg'
     subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
@@ -79,38 +79,70 @@ async def test_container_stdio_protocol() -> None:
 
 
 def test_named_volume_persists_private_output() -> None:
-    volume = f"edge-voice-test-{uuid.uuid4().hex}"
-    args = ["docker", "run", "--rm", *HARDENING, "--mount",
-            f"type=volume,source={volume},target=/data/output", "--entrypoint", "python", IMAGE]
+    volume = f"edge-tts-test-{uuid.uuid4().hex}"
+    args = [
+        "docker",
+        "run",
+        "--rm",
+        *HARDENING,
+        "--mount",
+        f"type=volume,source={volume},target=/data/output",
+        "--entrypoint",
+        "python",
+        IMAGE,
+    ]
     try:
         script = "from pathlib import Path; p=Path('/data/output/check.txt'); p.write_text('test'); p.chmod(0o600)"
-        subprocess.run([*args, "-c", script], check=True, capture_output=True, text=True, timeout=30)
+        subprocess.run(
+            [*args, "-c", script], check=True, capture_output=True, text=True, timeout=30
+        )
         script = "import json,os,stat; from pathlib import Path; p=Path('/data/output/check.txt'); print(json.dumps({'content':p.read_text(),'mode':stat.S_IMODE(p.stat().st_mode),'uid':os.getuid()}))"
-        result = subprocess.run([*args, "-c", script], check=True, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            [*args, "-c", script], check=True, capture_output=True, text=True, timeout=30
+        )
         data = json.loads(result.stdout)
         assert data["content"] == "test" and data["mode"] == 0o600 and data["uid"] != 0
     finally:
         # Only the uniquely named volume created by this test is removed.
-        subprocess.run(["docker", "volume", "rm", volume], capture_output=True, timeout=30, check=False)
+        subprocess.run(
+            ["docker", "volume", "rm", volume], capture_output=True, timeout=30, check=False
+        )
 
 
 @pytest.mark.live
 @pytest.mark.skipif(os.environ.get("EDGE_TTS_LIVE_TESTS") != "1", reason="Network tests disabled")
 @pytest.mark.parametrize("audio_format,subtitles", [("mp3", "srt"), ("ogg", "vtt")])
-async def test_container_live_speech_and_sidecars(tmp_path: Path, audio_format: str, subtitles: str) -> None:
-    parameters = StdioServerParameters(command="docker", args=[
-        "run", "--rm", "--init", "-i", *HARDENING, "--mount",
-        f"type=bind,source={tmp_path},target=/data/output", IMAGE,
-    ])
+async def test_container_live_speech_and_sidecars(
+    tmp_path: Path, audio_format: str, subtitles: str
+) -> None:
+    parameters = StdioServerParameters(
+        command="docker",
+        args=[
+            "run",
+            "--rm",
+            "--init",
+            "-i",
+            *HARDENING,
+            "--mount",
+            f"type=bind,source={tmp_path},target=/data/output",
+            IMAGE,
+        ],
+    )
     async with asyncio.timeout(90):
         async with stdio_client(parameters) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                response = await session.call_tool("tts", {
-                    "text": "Привет! Проверяем синтез речи внутри контейнера.",
-                    "voice": "ru-RU-SvetlanaNeural", "audio_format": audio_format,
-                    "subtitles": subtitles, "word_timings": True, "timeout": 60,
-                })
+                response = await session.call_tool(
+                    "tts",
+                    {
+                        "text": "Привет! Проверяем синтез речи внутри контейнера.",
+                        "voice": "ru-RU-SvetlanaNeural",
+                        "audio_format": audio_format,
+                        "subtitles": subtitles,
+                        "word_timings": True,
+                        "timeout": 60,
+                    },
+                )
                 result = response.structuredContent
                 assert not response.isError and result["success"], result
                 assert not result.get("warnings"), result
