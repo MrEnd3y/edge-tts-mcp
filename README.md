@@ -37,102 +37,41 @@ requirements.txt        # прямые зависимости с фиксиро�
 
 ## Установка и запуск
 
-Из корня проекта, Windows / PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe main.py --help
-.\.venv\Scripts\python.exe main.py
-```
-
-Linux / macOS:
-
-```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python main.py --help
-.venv/bin/python main.py
-```
-
-Сервер ожидает сообщения MCP в stdin. Это не интерактивная TTS-консоль.
-Для установки как пакета выполните `python -m pip install .` в выбранном окружении.
-После этого команда `edge-tts-mcp` доступна и вне каталога проекта.
-
-### Запуск через uvx
-
-Без клонирования и ручного создания виртуального окружения:
+Через `uvx`:
 
 ```sh
 uvx --python 3.12 --from git+https://github.com/MrEnd3y/edge-tts-mcp.git edge-tts-mcp
 ```
 
-Из локальной копии (включая ещё не опубликованные изменения):
+Установка из локальной копии репозитория:
 
 ```sh
-uvx --from . edge-tts-mcp
+python -m pip install .
+edge-tts-mcp
 ```
 
 `uvx` устанавливает Python-зависимости, но не системные FFmpeg/FFprobe.
-Для воспроизводимой установки закрепите проверенный commit в Git URL (`.git@<commit>`).
-
-`requirements.txt` и метаданные пакета содержат одинаковые прямые зависимости
-в формате `библиотека==версия`; их соответствие проверяется тестом.
-Транзитивные зависимости разрешает установщик. Lock-файл для установки не требуется.
+Транспорт — stdio; процесс сервера запускается MCP-клиентом.
 
 ## Подключение MCP
 
-Укажите абсолютный путь к Python из окружения и к `main.py`:
+Пример конфигурации клиента:
 
 ```json
 {
   "mcpServers": {
     "edge-tts-mcp": {
-      "command": "/absolute/path/to/project/.venv/bin/python",
-      "args": ["/absolute/path/to/project/main.py"],
-      "env": {"EDGE_TTS_OUTPUT_DIR": "/absolute/path/to/output"}
+      "command": "uvx",
+      "args": ["--python", "3.12", "--from", "git+https://github.com/MrEnd3y/edge-tts-mcp.git", "edge-tts-mcp"]
     }
   }
 }
 ```
 
-На Windows используйте путь вида `F:/Projects/edge-tts-mcp/.venv/Scripts/python.exe`.
-Если пакет установлен, вместо пути к `main.py` можно передать `["-m", "edge_tts_mcp"]`.
+Для установленного пакета используйте `"command": "edge-tts-mcp"` без аргументов.
+Настройки передаются через `env`; при необходимости укажите абсолютный путь к команде.
 Таймаут MCP-клиента должен быть больше таймаута инструмента, например 60 секунд
 при стандартном лимите синтеза 45 секунд.
-
-### Hermes Agent
-
-Добавьте запись в `~/.hermes/config.yaml` (а не `mcpServers` из JSON-примера выше):
-
-```yaml
-mcp_servers:
-  edge_tts:
-    command: uvx
-    args:
-      - --python
-      - "3.12"
-      - --from
-      - git+https://github.com/MrEnd3y/edge-tts-mcp.git
-      - edge-tts-mcp
-    env:
-      EDGE_TTS_OUTPUT_DIR: /absolute/path/to/speech
-      EDGE_TTS_VOICE: ru-RU-SvetlanaNeural
-      EDGE_TTS_TEMPO_MIN: "0.5"
-      EDGE_TTS_TEMPO_MAX: "2.0"
-      EDGE_TTS_TIMEOUT_SECONDS: "60"
-      EDGE_TTS_MAX_AUDIO_DURATION_SECONDS: "300"
-    timeout: 75
-    connect_timeout: 120
-```
-
-При необходимости укажите абсолютный путь к `uvx` (`uvx.exe` на Windows),
-а также `EDGE_TTS_FFMPEG`/`EDGE_TTS_FFPROBE`. Для локальных изменений замените
-Git URL в `--from` абсолютным путём к репозиторию. ENV передаётся явно:
-Hermes не обязан наследовать всё окружение вашего терминала.
-Затем запустите `hermes chat` или выполните `/reload-mcp` в текущем сеансе.
-Пути аудио относятся к машине MCP-сервера; доставку файла пользователю выполняет Hermes.
-Формат настройки описан в [документации Hermes MCP](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp/).
 
 ## Инструменты
 
@@ -310,7 +249,7 @@ SRT/VTT создаются по ним. Некорректные, схлопну
 Файлы `.env` автоматически не загружаются и не требуются: сервер работает
 со встроенной конфигурацией сразу после установки. Это исключает зависимость
 от рабочей директории MCP-клиента. `.env.example` — только шаблон без секретов.
-Обычно настройку передают через `env` в конфигурации MCP-клиента (пример Hermes выше).
+Обычно настройку передают через `env` в конфигурации MCP-клиента.
 При желании создайте собственный `.env` по шаблону и явно загрузите его лаунчером:
 
 ```sh
@@ -345,6 +284,47 @@ docker run --rm --init -i -v speech-output:/data/output edge-tts-mcp:local
 docker compose build
 docker compose run --rm -T edge-tts-mcp
 ```
+
+Compose передаёт настройки голоса, скорости, громкости, высоты, tempo, таймаута, длины клипа,
+sidecar-файлов, параллелизма и исполняемых файлов из ENV процесса или своего
+необязательного `.env`. Например, без `.env`:
+
+```powershell
+$env:EDGE_TTS_TEMPO_MIN = "0.85"
+$env:EDGE_TTS_TEMPO_MAX = "1.15"
+$env:EDGE_TTS_TIMEOUT_SECONDS = "60"
+docker compose run --rm -T edge-tts-mcp
+```
+
+Либо передайте отдельный файл настроек явно:
+
+```sh
+docker compose --env-file /absolute/path/to/tts-settings.env run --rm -T edge-tts-mcp
+```
+
+Приоритет здесь: параметры `tts` → ENV контейнера (значения из окружения
+лаунчера имеют приоритет над `.env` Compose) → встроенные значения.
+Сервер сам `.env` не читает: файл загружает Docker Compose и передаёт только
+переменные, перечисленные в `environment` файла `compose.yaml`.
+При отсутствии переменной используется значение по умолчанию; явно пустая
+переменная не скрывается за значением по умолчанию и проверяется сервером.
+
+**Исключение для путей:** внутри Compose каталог вывода намеренно фиксирован
+как `/data/output` и совпадает с точкой монтирования тома `speech-output`.
+`EDGE_TTS_OUTPUT_DIR` из окружения хоста или общего `.env.example` не меняет этот
+путь: Windows-путь/домашний каталог хоста нельзя автоматически использовать
+в контейнере с read-only файловой системой. Для сохранения в конкретный каталог
+хоста замените монтирование на bind mount (`/absolute/host/output:/data/output`),
+не меняя путь внутри контейнера; проверьте права записи для UID контейнера.
+`EDGE_TTS_FFMPEG` и `EDGE_TTS_FFPROBE`, если переопределены для Compose,
+должны указывать на Linux-исполняемые файлы **внутри контейнера**, не на хосте.
+Не подключайте весь `.env` через `env_file`: это может передать в контейнер
+посторонние настройки и секреты.
+
+MCP stdio запускается через `compose run --rm -T`, а не `compose up -d`:
+MCP-клиент должен владеть stdin/stdout конкретного процесса.
+На Windows MCP-клиенту может понадобиться наследование `ProgramFiles`, чтобы
+Docker Desktop нашёл плагин Compose в ограниченном окружении дочернего процесса.
 
 Контейнер содержит FFmpeg и FFprobe и работает от непривилегированного пользователя.
 Для stdio используйте `-i` без `-t`; сетевых портов нет.

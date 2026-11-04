@@ -7,4 +7,13 @@
 !README.md
 !LICENSE
 !edge_tts_mcp/
+edge_tts_mcp/*
 !edge_tts_mcp/*.py
+!edge_tts_mcp/core/
+edge_tts_mcp/core/*
+!edge_tts_mcp/core/*.py
+**/__pycache__/
+**/*.py[cod]
+**/.env
+**/.env.*
+**/*.env

@@ -15,7 +15,23 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     environment:
+      # Keep the container path aligned with the persistent volume below.
+      # Native EDGE_TTS_OUTPUT_DIR may be a host path and must not leak into it.
       EDGE_TTS_OUTPUT_DIR: /data/output
+      # Use '-' rather than ':-': explicit empty values must fail validation.
+      EDGE_TTS_VOICE: "${EDGE_TTS_VOICE-ru-RU-SvetlanaNeural}"
+      EDGE_TTS_RATE: "${EDGE_TTS_RATE-+0%}"
+      EDGE_TTS_VOLUME: "${EDGE_TTS_VOLUME-+0%}"
+      EDGE_TTS_PITCH: "${EDGE_TTS_PITCH-+0Hz}"
+      EDGE_TTS_TEMPO_MIN: "${EDGE_TTS_TEMPO_MIN-0.5}"
+      EDGE_TTS_TEMPO_MAX: "${EDGE_TTS_TEMPO_MAX-2.0}"
+      EDGE_TTS_TIMEOUT_SECONDS: "${EDGE_TTS_TIMEOUT_SECONDS-45}"
+      EDGE_TTS_MAX_AUDIO_DURATION_SECONDS: "${EDGE_TTS_MAX_AUDIO_DURATION_SECONDS-300}"
+      EDGE_TTS_ALLOW_SIDECARS: "${EDGE_TTS_ALLOW_SIDECARS-1}"
+      EDGE_TTS_MAX_CONCURRENT: "${EDGE_TTS_MAX_CONCURRENT-2}"
+      # Overrides must refer to executables inside the Linux container.
+      EDGE_TTS_FFMPEG: "${EDGE_TTS_FFMPEG-/usr/bin/ffmpeg}"
+      EDGE_TTS_FFPROBE: "${EDGE_TTS_FFPROBE-/usr/bin/ffprobe}"
     volumes:
       - speech-output:/data/output
 

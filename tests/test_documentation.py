@@ -32,6 +32,9 @@ def test_readme_documents_every_server_environment_variable() -> None:
     assert names
     for name in names:
         assert f"| `{name}` |" in readme, f"Missing ENV documentation: {name}"
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    for name in names:
+        assert f"      {name}:" in compose, f"Missing Compose environment mapping: {name}"
 
 
 def test_readme_structure_and_entrypoint() -> None:
