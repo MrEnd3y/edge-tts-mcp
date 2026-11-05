@@ -18,6 +18,8 @@ from edge_tts_mcp.core.server import create_server
 from edge_tts_mcp.core.service import Settings, synthesize
 from edge_tts_mcp.core.timings import TimingError, Word, rescale_words
 
+VOICE = "ru-RU-SvetlanaNeural"
+
 
 @pytest.fixture(autouse=True)
 def fake_probe(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -490,6 +492,170 @@ async def test_mcp_target_schema_and_forwarding(
         for value in [0.49, 2.01, float("nan"), float("inf"), True, "1.0", None]:
             with pytest.raises(Exception):
                 await mcp.call_tool("tts", {"text": "hi", name: value})
+
+
+@pytest.mark.parametrize(
+    "failure,expected_attempts",
+    [
+        ("no_audio", 3),
+        ("websocket", 3),
+        ("connection", 3),
+        ("http429", 3),
+        ("http500", 3),
+        ("http403", 1),
+        ("unexpected", 1),
+    ],
+)
+async def test_transient_synthesis_errors_are_retried(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    mp3_bytes: bytes,
+    failure: str,
+    expected_attempts: int,
+) -> None:
+    calls = 0
+
+    async def save(self: object, filename: str) -> None:
+        nonlocal calls
+        calls += 1
+        if failure == "no_audio" and calls < expected_attempts:
+            raise service.edge_tts.exceptions.NoAudioReceived("private response")
+        if failure == "websocket" and calls < expected_attempts:
+            raise service.edge_tts.exceptions.WebSocketError("private response")
+        if failure == "connection" and calls < expected_attempts:
+            raise ConnectionError("private response")
+        if failure in ("http429", "http500") and calls < expected_attempts:
+            status = {"http429": 429, "http500": 500}[failure]
+            error = service.edge_tts.communicate.aiohttp.ClientResponseError(
+                request_info=None, history=(), status=status, message="private response"
+            )
+            raise error
+        if failure == "http403":
+            raise service.edge_tts.communicate.aiohttp.ClientResponseError(
+                request_info=None, history=(), status=403, message="private response"
+            )
+        if failure == "unexpected":
+            raise service.edge_tts.exceptions.UnexpectedResponse("private response")
+        Path(filename).write_bytes(mp3_bytes)
+
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    monkeypatch.setattr(service.asyncio, "sleep", AsyncMock())
+    retry_settings = replace(
+        settings,
+        retry_attempts=expected_attempts,
+        retry_initial_delay_seconds=0,
+        retry_max_delay_seconds=0,
+    )
+    result = await synthesize(retry_settings, "hi", VOICE)
+    if failure in ("http403", "unexpected"):
+        assert result["error_code"] == "service_error"
+        assert "private" not in str(result)
+    else:
+        assert result["success"], result
+    assert calls == expected_attempts
+    assert len(list(settings.output_dir.iterdir())) == int(result["success"])
+
+
+async def test_retries_use_fresh_communicate_and_remove_partial_files(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, mp3_bytes: bytes
+) -> None:
+    calls = 0
+    paths: list[Path] = []
+
+    async def save(self: object, filename: str) -> None:
+        nonlocal calls
+        calls += 1
+        paths.append(Path(filename))
+        if calls == 1:
+            Path(filename).write_bytes(b"partial")
+            raise service.edge_tts.exceptions.NoAudioReceived("temporary")
+        Path(filename).write_bytes(mp3_bytes)
+
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    monkeypatch.setattr(service.asyncio, "sleep", AsyncMock())
+    result = await synthesize(replace(settings, retry_attempts=2), "hi", VOICE)
+    assert result["success"] and calls == 2
+    assert paths[0] == paths[1]
+    assert len(list(settings.output_dir.iterdir())) == 1
+
+
+async def test_target_unreachable_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, mp3_bytes: bytes
+) -> None:
+    save = AsyncMock()
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    monkeypatch.setattr(service, "validate_audio", lambda *args: (len(mp3_bytes), 10.0))
+    result = await synthesize(settings, "hi", VOICE, target_duration_seconds=1)
+    assert result["error_code"] == "target_duration_unreachable"
+    save.assert_awaited_once()
+
+
+async def test_retry_wait_uses_shared_timeout(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    save = AsyncMock(side_effect=service.edge_tts.exceptions.NoAudioReceived("temporary"))
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    configured = replace(
+        settings,
+        retry_attempts=5,
+        retry_initial_delay_seconds=1,
+        retry_max_delay_seconds=1,
+    )
+    result = await synthesize(configured, "hi", VOICE, timeout=0.05)
+    assert result["error_code"] == "timeout"
+    assert save.await_count == 1
+    assert list(settings.output_dir.iterdir()) == []
+
+
+async def test_retry_backoff_grows_and_is_capped(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, mp3_bytes: bytes
+) -> None:
+    calls = 0
+
+    async def save(self: object, filename: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 5:
+            raise service.edge_tts.exceptions.NoAudioReceived("temporary")
+        Path(filename).write_bytes(mp3_bytes)
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    monkeypatch.setattr(service.asyncio, "sleep", sleep)
+    configured = replace(
+        settings, retry_attempts=5, retry_initial_delay_seconds=2, retry_max_delay_seconds=10
+    )
+    result = await synthesize(configured, "hi", VOICE)
+    assert result["success"] and calls == 5
+    assert [call.args[0] for call in sleep.await_args_list if call.args[0] > 0] == [2, 4, 8, 10]
+
+
+async def test_cancellation_during_retry_wait_cleans_partial_audio(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    waiting = asyncio.Event()
+    calls = 0
+
+    async def save(self: object, filename: str) -> None:
+        nonlocal calls
+        calls += 1
+        Path(filename).write_bytes(b"partial")
+        raise service.edge_tts.exceptions.NoAudioReceived("temporary")
+
+    async def wait_for_retry(delay: float) -> None:
+        if delay:
+            waiting.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(service.edge_tts.Communicate, "save", save)
+    monkeypatch.setattr(service.asyncio, "sleep", wait_for_retry)
+    task = asyncio.create_task(synthesize(settings, "hi", VOICE))
+    await asyncio.wait_for(waiting.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert calls == 1
+    assert list(settings.output_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize(

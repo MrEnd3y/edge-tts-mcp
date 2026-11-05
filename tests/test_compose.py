@@ -30,6 +30,9 @@ DEFAULT_ENV = {
     "EDGE_TTS_TEMPO_MIN": "0.5",
     "EDGE_TTS_TEMPO_MAX": "2.0",
     "EDGE_TTS_TIMEOUT_SECONDS": "45",
+    "EDGE_TTS_RETRY_ATTEMPTS": "5",
+    "EDGE_TTS_RETRY_INITIAL_DELAY_SECONDS": "2",
+    "EDGE_TTS_RETRY_MAX_DELAY_SECONDS": "10",
     "EDGE_TTS_MAX_AUDIO_DURATION_SECONDS": "300",
     "EDGE_TTS_ALLOW_SIDECARS": "1",
     "EDGE_TTS_MAX_CONCURRENT": "2",
@@ -127,7 +130,12 @@ def test_compose_explicit_settings_and_shell_precedence(
     set_file(compose, values)
     monkeypatch.setenv("EDGE_TTS_TIMEOUT_SECONDS", "75")
     environment = service_config(compose)["environment"]
-    expected = {**values, "EDGE_TTS_OUTPUT_DIR": "/data/output", "EDGE_TTS_TIMEOUT_SECONDS": "75"}
+    expected = {
+        **DEFAULT_ENV,
+        **values,
+        "EDGE_TTS_OUTPUT_DIR": "/data/output",
+        "EDGE_TTS_TIMEOUT_SECONDS": "75",
+    }
     expected.pop("EDGE_TTS_UNRELATED_PUBLIC_TEST")
     assert environment == expected
 
@@ -173,6 +181,7 @@ async def test_compose_mcp_runtime_defaults_and_overrides(
                 assert caps["timeout_seconds"]["default"] == (60 if overrides else 45)
                 assert caps["max_audio_duration_seconds"] == (600 if overrides else 300)
                 assert caps["max_concurrent_synthesis"] == (3 if overrides else 2)
+                assert caps["retry_policy"]["max_attempts"] == 5
                 schema = next(
                     tool for tool in (await session.list_tools()).tools if tool.name == "tts"
                 ).inputSchema
@@ -219,6 +228,9 @@ async def test_compose_live_synthesis_and_duration(
             "EDGE_TTS_TEMPO_MIN": "0.85",
             "EDGE_TTS_TEMPO_MAX": "1.15",
             "EDGE_TTS_TIMEOUT_SECONDS": "60",
+            "EDGE_TTS_RETRY_ATTEMPTS": "3",
+            "EDGE_TTS_RETRY_INITIAL_DELAY_SECONDS": "1",
+            "EDGE_TTS_RETRY_MAX_DELAY_SECONDS": "4",
             "EDGE_TTS_MAX_AUDIO_DURATION_SECONDS": "600",
         },
     )

@@ -104,6 +104,20 @@ def create_server(settings: Settings | None = None) -> FastMCP:
                 "requires": ["ffmpeg", "ffprobe"],
             },
             "max_concurrent_synthesis": settings.max_concurrent,
+            "retry_policy": {
+                "max_attempts": settings.retry_attempts,
+                "initial_delay_seconds": settings.retry_initial_delay_seconds,
+                "max_delay_seconds": settings.retry_max_delay_seconds,
+                "retryable_failures": [
+                    "no_audio",
+                    "network_error",
+                    "timeout",
+                    "http_429",
+                    "http_5xx",
+                ],
+                "uses_request_timeout": True,
+                "unreachable_duration_is_retried": False,
+            },
             "queue_wait_counts_toward_timeout": True,
             "long_text": "edge-tts internal UTF-8-safe chunking with continuous audio and offsets",
             "subtitles": ["srt", "vtt"] if settings.allow_sidecars else [],
@@ -196,7 +210,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         Check duration_fitting.target_met and warnings; precise sync/natural speech
         are not guaranteed. Timings are rescaled using the applied tempo.
         Successful requests create audio; subtitles and word timings are optional sidecar files.
-        Timeout includes queue wait, synthesis, conversion and sidecars. Up to 100000 characters;
+        Timeout includes queue wait, retries, synthesis, conversion and sidecars. Up to 100000 characters;
         max_audio_duration_seconds limits audio duration independently of the operation timeout.
         Targets must not exceed that duration limit; oversized output is not trimmed or published.
         for long jobs increase timeout and client's deadline or shorten text.

@@ -43,6 +43,37 @@ def _check_deadline(deadline: float) -> None:
         raise TimeoutError
 
 
+def _is_retryable_tts_error(error: Exception) -> bool:
+    """Retry only failures plausibly transient at the Microsoft transport layer."""
+    if isinstance(
+        error,
+        (
+            edge_tts.exceptions.NoAudioReceived,
+            edge_tts.exceptions.WebSocketError,
+            TimeoutError,
+            ConnectionError,
+        ),
+    ):
+        return True
+    for error_type in type(error).__mro__:
+        if not error_type.__module__.startswith("aiohttp"):
+            continue
+        if error_type.__name__ == "ClientConnectionError":
+            return True
+        if error_type.__name__ == "ClientResponseError":
+            status = getattr(error, "status", None)
+            return status == 429 or (isinstance(status, int) and 500 <= status <= 599)
+    return False
+
+
+def _retry_delay(settings: Settings, failed_attempt: int) -> float:
+    """Exponential backoff, where the first failed attempt uses the initial delay."""
+    return min(
+        settings.retry_initial_delay_seconds * (2 ** (failed_attempt - 1)),
+        settings.retry_max_delay_seconds,
+    )
+
+
 async def _checkpoint(deadline: float) -> None:
     # asyncio timeouts/cancellation are delivered at suspension points. Save
     # mocks (and the final synchronous write in the SDK) need not suspend.
@@ -123,8 +154,8 @@ async def synthesize(
     try:
         async with asyncio.timeout_at(deadline), AsyncExitStack() as stack:
             # Validate options before creating files or contacting the service.
-            try:
-                communicate = edge_tts.Communicate(
+            def new_communicate() -> edge_tts.Communicate:
+                return edge_tts.Communicate(
                     text,
                     voice.strip(),
                     rate=rate,
@@ -134,6 +165,9 @@ async def synthesize(
                     connect_timeout=10,
                     receive_timeout=30,
                 )
+
+            try:
+                communicate = new_communicate()
             except (ValueError, TypeError):
                 return failure("invalid_input", "Invalid voice, rate, volume, or pitch parameter")
             if semaphore is not None:
@@ -149,10 +183,33 @@ async def synthesize(
             mp3_path = Path(work.name) / "speech.mp3"
             metadata_path = Path(work.name) / "boundaries.jsonl"
             # edge-tts handles UTF-8-safe 4096-byte chunks and global event offsets.
-            if needs_metadata:
-                await communicate.save(str(mp3_path), str(metadata_path))
+            for attempt in range(settings.retry_attempts):
+                if attempt:
+                    communicate = new_communicate()
+                try:
+                    if needs_metadata:
+                        await communicate.save(str(mp3_path), str(metadata_path))
+                    else:
+                        await communicate.save(str(mp3_path))
+                    break
+                except Exception as exc:
+                    if not _is_retryable_tts_error(exc) or attempt + 1 >= settings.retry_attempts:
+                        raise
+                    # A failed save may leave partial files; each attempt starts clean.
+                    mp3_path.unlink(missing_ok=True)
+                    metadata_path.unlink(missing_ok=True)
+                    delay = _retry_delay(settings, attempt + 1)
+                    logger.warning(
+                        "Transient Microsoft TTS failure (%s); retry %d/%d in %.1f seconds",
+                        type(exc).__name__,
+                        attempt + 2,
+                        settings.retry_attempts,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    _check_deadline(deadline)
             else:
-                await communicate.save(str(mp3_path))
+                raise RuntimeError("Synthesis attempt loop ended unexpectedly")
             await _checkpoint(deadline)
             stem = f"edge-tts-{uuid.uuid4().hex}"
             outputs: list[tuple[Path, Path]] = []

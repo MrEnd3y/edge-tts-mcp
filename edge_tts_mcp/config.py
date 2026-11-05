@@ -22,6 +22,11 @@ MAX_TIMEOUT_SECONDS = 300
 DEFAULT_TIMEOUT_SECONDS = 45.0
 # Audio duration and the operation timeout are independent settings.
 DEFAULT_MAX_AUDIO_DURATION_SECONDS = 300.0
+DEFAULT_RETRY_ATTEMPTS = 5
+DEFAULT_RETRY_INITIAL_DELAY_SECONDS = 2.0
+DEFAULT_RETRY_MAX_DELAY_SECONDS = 10.0
+MAX_RETRY_ATTEMPTS = 5
+MAX_RETRY_DELAY_SECONDS = 60.0
 DEFAULT_OUTPUT_DIR = Path.home() / ".edge-tts-mcp" / "output"
 
 
@@ -42,6 +47,10 @@ def valid_tempo_bounds(tempo_min: float, tempo_max: float) -> bool:
     )
 
 
+def nonnegative_finite(value: float) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
 @dataclass(frozen=True)
 class Settings:
     output_dir: Path = DEFAULT_OUTPUT_DIR
@@ -57,6 +66,9 @@ class Settings:
     tempo_max: float = DEFAULT_TEMPO_MAX
     timeout: float = DEFAULT_TIMEOUT_SECONDS
     max_audio_duration_seconds: float = DEFAULT_MAX_AUDIO_DURATION_SECONDS
+    retry_attempts: int = DEFAULT_RETRY_ATTEMPTS
+    retry_initial_delay_seconds: float = DEFAULT_RETRY_INITIAL_DELAY_SECONDS
+    retry_max_delay_seconds: float = DEFAULT_RETRY_MAX_DELAY_SECONDS
 
     def __post_init__(self) -> None:
         if not isinstance(self.output_dir, Path):
@@ -79,6 +91,23 @@ class Settings:
             )
         if not positive_finite(self.max_audio_duration_seconds):
             raise ValueError("Maximum audio duration must be a finite number greater than 0")
+        if (
+            type(self.retry_attempts) is not int
+            or not 1 <= self.retry_attempts <= MAX_RETRY_ATTEMPTS
+        ):
+            raise ValueError(
+                f"EDGE_TTS_RETRY_ATTEMPTS must be an integer between 1 and {MAX_RETRY_ATTEMPTS}"
+            )
+        if not nonnegative_finite(self.retry_initial_delay_seconds):
+            raise ValueError("EDGE_TTS_RETRY_INITIAL_DELAY_SECONDS must be finite and at least 0")
+        if (
+            not nonnegative_finite(self.retry_max_delay_seconds)
+            or self.retry_max_delay_seconds > MAX_RETRY_DELAY_SECONDS
+            or self.retry_initial_delay_seconds > self.retry_max_delay_seconds
+        ):
+            raise ValueError(
+                "EDGE_TTS_RETRY_MAX_DELAY_SECONDS must be finite, at least the initial delay, and at most 60"
+            )
         try:
             # Constructor validation only; no connection or synthesis is started.
             edge_tts.Communicate(
@@ -117,6 +146,16 @@ def _environment_number(
         or (maximum is not None and value > maximum)
     ):
         raise ValueError(message)
+    return value
+
+
+def _environment_integer(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        raise ValueError(f"{name} must be an integer between {minimum} and {maximum}") from None
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be an integer between {minimum} and {maximum}")
     return value
 
 
@@ -180,5 +219,22 @@ def settings_from_environment(
         ),
         max_audio_duration_seconds=_environment_number(
             "EDGE_TTS_MAX_AUDIO_DURATION_SECONDS", DEFAULT_MAX_AUDIO_DURATION_SECONDS
+        ),
+        retry_attempts=_environment_integer(
+            "EDGE_TTS_RETRY_ATTEMPTS", DEFAULT_RETRY_ATTEMPTS, 1, MAX_RETRY_ATTEMPTS
+        ),
+        retry_initial_delay_seconds=_environment_number(
+            "EDGE_TTS_RETRY_INITIAL_DELAY_SECONDS",
+            DEFAULT_RETRY_INITIAL_DELAY_SECONDS,
+            minimum=0,
+            maximum=MAX_RETRY_DELAY_SECONDS,
+            inclusive_minimum=True,
+        ),
+        retry_max_delay_seconds=_environment_number(
+            "EDGE_TTS_RETRY_MAX_DELAY_SECONDS",
+            DEFAULT_RETRY_MAX_DELAY_SECONDS,
+            minimum=0,
+            maximum=MAX_RETRY_DELAY_SECONDS,
+            inclusive_minimum=True,
         ),
     )

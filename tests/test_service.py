@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -117,7 +118,7 @@ async def test_safe_errors(
     monkeypatch: pytest.MonkeyPatch, settings: Settings, error: Exception, code: str
 ) -> None:
     monkeypatch.setattr(service.edge_tts.Communicate, "save", AsyncMock(side_effect=error))
-    result = await synthesize(settings, "hi", VOICE)
+    result = await synthesize(replace(settings, retry_attempts=1), "hi", VOICE)
     assert result["error_code"] == code
     assert "private" not in str(result)
     assert list(settings.output_dir.iterdir()) == []

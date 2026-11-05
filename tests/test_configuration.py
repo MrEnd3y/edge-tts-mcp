@@ -21,11 +21,16 @@ NUMERIC_ENV = [
     "EDGE_TTS_TIMEOUT_SECONDS",
     "EDGE_TTS_MAX_AUDIO_DURATION_SECONDS",
 ]
+RETRY_ENV = [
+    "EDGE_TTS_RETRY_ATTEMPTS",
+    "EDGE_TTS_RETRY_INITIAL_DELAY_SECONDS",
+    "EDGE_TTS_RETRY_MAX_DELAY_SECONDS",
+]
 
 
 @pytest.fixture(autouse=True)
 def clear_numeric_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in NUMERIC_ENV:
+    for name in NUMERIC_ENV + RETRY_ENV:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -49,6 +54,17 @@ def test_env_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     settings = settings_from_environment(output_dir=tmp_path)
     assert (settings.tempo_min, settings.tempo_max) == (0.7, 1.4)
     assert settings.timeout == 12 and settings.max_audio_duration_seconds == 600
+    assert settings.retry_attempts == 5
+
+
+def test_retry_env_defaults_and_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("EDGE_TTS_RETRY_ATTEMPTS", "3")
+    monkeypatch.setenv("EDGE_TTS_RETRY_INITIAL_DELAY_SECONDS", "1.5")
+    monkeypatch.setenv("EDGE_TTS_RETRY_MAX_DELAY_SECONDS", "6")
+    settings = settings_from_environment(output_dir=tmp_path)
+    assert settings.retry_attempts == 3
+    assert settings.retry_initial_delay_seconds == 1.5
+    assert settings.retry_max_delay_seconds == 6
 
 
 @pytest.mark.parametrize("name", NUMERIC_ENV)
@@ -60,6 +76,26 @@ def test_invalid_numeric_env_is_named_and_not_echoed(
     with pytest.raises(ValueError, match=name) as exc:
         settings_from_environment(output_dir=tmp_path)
     assert "private-invalid-value" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("EDGE_TTS_RETRY_ATTEMPTS", "0"),
+        ("EDGE_TTS_RETRY_ATTEMPTS", "6"),
+        ("EDGE_TTS_RETRY_ATTEMPTS", "2.5"),
+        ("EDGE_TTS_RETRY_INITIAL_DELAY_SECONDS", "-1"),
+        ("EDGE_TTS_RETRY_INITIAL_DELAY_SECONDS", "NaN"),
+        ("EDGE_TTS_RETRY_MAX_DELAY_SECONDS", "61"),
+        ("EDGE_TTS_RETRY_MAX_DELAY_SECONDS", "1"),
+    ],
+)
+def test_invalid_retry_env_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=name):
+        settings_from_environment(output_dir=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -139,6 +175,24 @@ async def test_mcp_schema_and_calls_use_env_defaults(
     assert caps["duration_fitting"]["default_tempo_range"] == [0.7, 1.3]
     assert caps["timeout_seconds"] == {"default": 60, "maximum": 300}
     assert caps["max_audio_duration_seconds"] == 600
+    assert caps["retry_policy"]["max_attempts"] == 5
+    assert caps["retry_policy"]["initial_delay_seconds"] == 2
+    assert caps["retry_policy"]["max_delay_seconds"] == 10
+    assert caps["retry_policy"]["retryable_failures"] == [
+        "no_audio",
+        "network_error",
+        "timeout",
+        "http_429",
+        "http_5xx",
+    ]
+    assert caps["retry_policy"] == {
+        "max_attempts": 5,
+        "initial_delay_seconds": 2,
+        "max_delay_seconds": 10,
+        "retryable_failures": ["no_audio", "network_error", "timeout", "http_429", "http_5xx"],
+        "uses_request_timeout": True,
+        "unreachable_duration_is_retried": False,
+    }
 
 
 async def test_request_bounds_override_env_without_automatic_widening(
